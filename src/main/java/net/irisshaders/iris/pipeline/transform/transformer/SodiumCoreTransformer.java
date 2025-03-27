@@ -1,7 +1,11 @@
 package net.irisshaders.iris.pipeline.transform.transformer;
 
+import io.github.douira.glsl_transformer.ast.node.Identifier;
 import io.github.douira.glsl_transformer.ast.node.TranslationUnit;
+import io.github.douira.glsl_transformer.ast.node.declaration.TypeAndInitDeclaration;
+import io.github.douira.glsl_transformer.ast.node.external_declaration.DeclarationExternalDeclaration;
 import io.github.douira.glsl_transformer.ast.query.Root;
+import io.github.douira.glsl_transformer.ast.transform.ASTInjectionPoint;
 import io.github.douira.glsl_transformer.ast.transform.ASTParser;
 import net.irisshaders.iris.pipeline.transform.PatchShaderType;
 import net.irisshaders.iris.pipeline.transform.parameter.SodiumParameters;
@@ -19,23 +23,39 @@ public class SodiumCoreTransformer {
 		root.rename("projectionMatrixInverse", "iris_ProjectionMatrixInverse");
 		root.rename("normalMatrix", "iris_NormalMatrix");
 		root.rename("chunkOffset", "u_RegionOffset");
+		tree.parseAndInjectNode(t, ASTInjectionPoint.BEFORE_DECLARATIONS,
+				"uniform mat4 iris_LightmapTextureMatrix;");
 		if (parameters.type == PatchShaderType.VERTEX) {
-			boolean needsNormal = root.identifierIndex.has("vaNormal") || root.identifierIndex.has("at_tangent");
 			// _draw_translation replaced with Chunks[_draw_id].offset.xyz
 			root.replaceReferenceExpressions(t, "vaPosition", "_vert_position + _get_draw_translation(_draw_id)");
 			root.replaceReferenceExpressions(t, "vaColor", "_vert_color");
-			root.replaceReferenceExpressions(t, "vaNormal", "irs_Normal");
-			root.replaceReferenceExpressions(t, "at_tangent", "irs_Tangent");
-
-			root.replaceReferenceExpressions(t, "vaUV0", "_vert_tex_diffuse_coord");
+			root.rename("vaNormal", "iris_Normal");
+			root.replaceReferenceExpressions(t, "vaUV0", "((_vert_tex_diffuse_coord_bias * u_TexCoordShrink) + _vert_tex_diffuse_coord)");
 			root.replaceReferenceExpressions(t, "vaUV1", "ivec2(0, 10)");
-			root.replaceReferenceExpressions(t, "vaUV2", "a_LightAndData.xy");
+			root.replaceReferenceExpressions(t, "vaUV2", "(vec4(_decode_light(a_LightCoord), 0.0, 1.0) * inverse(iris_LightmapTextureMatrix)).xy");
 
 			root.replaceReferenceExpressions(t, "textureMatrix", "mat4(1.0)");
-			SodiumTransformer.replaceMidTexCoord(t, tree, root, 1.0f / 32768.0f);
-			SodiumTransformer.replaceMCEntity(t, tree, root);
 
-			SodiumTransformer.injectVertInit(t, tree, root, parameters, needsNormal);
+			SodiumTransformer.injectVertInit(t, tree, root, parameters);
+			for (Identifier id : root.identifierIndex.get("vaUV2")) {
+				TypeAndInitDeclaration initDeclaration = (TypeAndInitDeclaration) id.getAncestor(
+						2, 0, TypeAndInitDeclaration.class::isInstance);
+				if (initDeclaration == null) {
+					continue;
+				}
+				DeclarationExternalDeclaration declaration = (DeclarationExternalDeclaration) initDeclaration.getAncestor(
+						1, 0, DeclarationExternalDeclaration.class::isInstance);
+				if (declaration == null) {
+					continue;
+				}
+				declaration.detachAndDelete();
+				initDeclaration.detachAndDelete();
+				id.detachAndDelete();
+
+			}
+
+			root.rename("vaUV2", "_vert_tex_light_coord");
 		}
+
 	}
 }

@@ -23,17 +23,13 @@ import net.irisshaders.iris.gl.shader.ShaderCompileException;
 import net.irisshaders.iris.gl.state.ShaderAttributeInputs;
 import net.irisshaders.iris.gl.texture.TextureType;
 import net.irisshaders.iris.helpers.Tri;
-import net.irisshaders.iris.pipeline.transform.parameter.ComputeParameters;
-import net.irisshaders.iris.pipeline.transform.parameter.DHParameters;
-import net.irisshaders.iris.pipeline.transform.parameter.Parameters;
-import net.irisshaders.iris.pipeline.transform.parameter.SodiumParameters;
-import net.irisshaders.iris.pipeline.transform.parameter.TextureStageParameters;
-import net.irisshaders.iris.pipeline.transform.parameter.VanillaParameters;
+import net.irisshaders.iris.pipeline.transform.parameter.*;
 import net.irisshaders.iris.pipeline.transform.transformer.*;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import org.antlr.v4.runtime.Token;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.embeddedt.embeddium.impl.render.chunk.vertex.format.ChunkVertexType;
 
 import java.util.EnumMap;
 import java.util.List;
@@ -77,6 +73,7 @@ public class TransformPatcher {
 	private static final Pattern versionPattern = Pattern.compile("#version\\s+(\\d+)", Pattern.DOTALL);
 	private static final EnumASTTransformer<Parameters, PatchShaderType> transformer;
 	static Logger LOGGER = LogManager.getLogger(TransformPatcher.class);
+
 
 	static {
 		transformer = new EnumASTTransformer<>(PatchShaderType.class) {
@@ -302,7 +299,12 @@ public class TransformPatcher {
 			String name, String vertex, String tessControl, String tessEval, String geometry, String fragment,
 			Object2ObjectMap<Tri<String, TextureType, TextureStage>, String> textureMap) {
 		return transform(name, vertex, geometry, tessControl, tessEval, fragment,
-				new DHParameters(Patch.DH_TERRAIN, textureMap));
+				new DHParameters(Patch.DH_TERRAIN, textureMap) {
+					@Override
+					public TextureStage getTextureStage() {
+                        return super.getTextureStage();
+                    }
+				});
 	}
 
 
@@ -315,19 +317,18 @@ public class TransformPatcher {
 	}
 
 	public static Map<PatchShaderType, String> patchSodium(String name, String vertex, String geometry, String tessControl, String tessEval, String fragment,
-														   AlphaTest alpha,
+														   AlphaTest alpha, ShaderAttributeInputs inputs,
 														   Object2ObjectMap<Tri<String, TextureType, TextureStage>, String> textureMap) {
 		return transform(name, vertex, geometry, tessControl, tessEval, fragment,
-				new SodiumParameters(Patch.SODIUM, textureMap, alpha));
+				new SodiumParameters(Patch.SODIUM, textureMap, alpha, inputs));
 	}
 
 	public static Map<PatchShaderType, String> patchEmbeddium(String name, String vertex, String geometry, String tessControl, String tessEval, String fragment,
-														   AlphaTest alpha,
-														   Object2ObjectMap<Tri<String, TextureType, TextureStage>, String> textureMap) {
+															  AlphaTest alpha, ChunkVertexType inputs,
+															  Object2ObjectMap<Tri<String, TextureType, TextureStage>, String> textureMap) {
 		return transform(name, vertex, geometry, tessControl, tessEval, fragment,
-				new EmbeddiumParameters(Patch.EMBEDDIUM, textureMap, alpha));
+				new EmbeddiumParameters(Patch.EMBEDDIUM, textureMap, alpha, inputs));
 	}
-
 	public static Map<PatchShaderType, String> patchComposite(
 			String name, String vertex, String geometry, String fragment,
 			TextureStage stage,

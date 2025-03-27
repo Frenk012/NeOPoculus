@@ -3,8 +3,10 @@ package net.irisshaders.iris.compat.embeddium.impl.oculus;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Ints;
+import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.compat.embeddium.FormatAnalyzer;
+import net.irisshaders.iris.compat.embeddium.impl.monocle.EmbeddiumTransformPatcher;
 import net.irisshaders.iris.compat.embeddium.impl.monocle.ShaderTransformer;
 import net.irisshaders.iris.compat.embeddium.impl.monocle.vertices.terrain.IrisModelVertexFormats;
 import net.irisshaders.iris.gl.GLDebug;
@@ -12,6 +14,8 @@ import net.irisshaders.iris.gl.blending.AlphaTest;
 import net.irisshaders.iris.gl.blending.AlphaTests;
 import net.irisshaders.iris.gl.blending.BufferBlendOverride;
 import net.irisshaders.iris.gl.framebuffer.GlFramebuffer;
+import net.irisshaders.iris.gl.texture.TextureType;
+import net.irisshaders.iris.helpers.Tri;
 import net.irisshaders.iris.pipeline.IrisRenderingPipeline;
 import net.irisshaders.iris.pipeline.transform.PatchShaderType;
 import net.irisshaders.iris.pipeline.transform.ShaderPrinter;
@@ -21,6 +25,7 @@ import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
 import net.irisshaders.iris.shaderpack.programs.ProgramFallbackResolver;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
+import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.irisshaders.iris.shadows.ShadowRenderTargets;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import net.irisshaders.iris.targets.RenderTargets;
@@ -39,6 +44,8 @@ import org.lwjgl.opengl.GL43C;
 
 import java.util.*;
 import java.util.function.Supplier;
+
+import static net.irisshaders.iris.compat.embeddium.impl.monocle.ShaderTransformer.*;
 
 public class EmbeddiumPrograms {
 	private final EnumMap<Pass, GlFramebuffer> framebuffers = new EnumMap<>(Pass.class);
@@ -74,7 +81,7 @@ public class EmbeddiumPrograms {
 		stopwatch.stop();
 		Iris.logger.info("Transforming Embeddium shaders completed in {}", stopwatch);
 
-		WorldRenderingSettings.INSTANCE.setVertexFormat(IrisModelVertexFormats.MODEL_VERTEX_XHFP);
+		WorldRenderingSettings.INSTANCE.setVertexFormat((ChunkVertexType) IrisModelVertexFormats.MODEL_VERTEX_XHFP);
 
 	}
 
@@ -84,31 +91,35 @@ public class EmbeddiumPrograms {
 	}
 
 	private Map<PatchShaderType, String> transformShaders(ProgramSource source, AlphaTest alphaTest, ProgramSet programSet) {
-//		Map<PatchShaderType, String> transformed = TransformPatcher.patchEmbeddium(
-//				source.getName(),
-//				source.getVertexSource().orElse(null),
-//				source.getGeometrySource().orElse(null),
-//				source.getTessControlSource().orElse(null),
-//				source.getTessEvalSource().orElse(null),
-//				source.getFragmentSource().orElse(null),
-//				alphaTest,
-//				programSet.getPackDirectives().getTextureMap());
-//
-		Map<PatchShaderType, String> transformed = ShaderTransformer.transform(
+		Object2ObjectMap<Tri<String, TextureType, TextureStage>, String> textureMap = programSet.getPackDirectives().getTextureMap();
+
+		ChunkVertexType vertexType = IrisModelVertexFormats.MODEL_VERTEX_XHFP;
+
+		programSet.getPackDirectives().getTextureMap();
+		Map<PatchShaderType, String> transformed = TransformPatcher.patchEmbeddium(
 				source.getName(),
 				source.getVertexSource().orElse(null),
 				source.getGeometrySource().orElse(null),
 				source.getTessControlSource().orElse(null),
 				source.getTessEvalSource().orElse(null),
 				source.getFragmentSource().orElse(null),
-				alphaTest,
-				programSet.getPackDirectives().getTextureMap());
+				alphaTest, vertexType, textureMap);
 
-		//ShaderPrinter.printProgram("old_" + source.getName()).addSources(transformed).print();
-		ShaderPrinter.printProgram("embeddium_" + source.getName()).addSources(transformed).print();
+		Map<PatchShaderType, String> transformedNew = ShaderTransformer.transform(
+				source.getName(),
+				source.getVertexSource().orElse(null),
+				source.getGeometrySource().orElse(null),
+				source.getTessControlSource().orElse(null),
+				source.getTessEvalSource().orElse(null),
+				source.getFragmentSource().orElse(null),
+				alphaTest, vertexType, textureMap);
 
-		return transformed;
-	}
+		ShaderPrinter.printProgram("old_" + source.getName()).addSources(transformed).print();
+		ShaderPrinter.printProgram("new_" + source.getName()).addSources(transformedNew).print();
+		ShaderPrinter.printProgram("embeddium_" + source.getName()).addSources(transformedNew).print();
+
+		return transformedNew;
+    }
 
 	private Map<PatchShaderType, GlShader> createGlShaders(String passName, Map<PatchShaderType, String> transformed) {
 		Map<PatchShaderType, GlShader> newMap = new EnumMap<>(PatchShaderType.class);

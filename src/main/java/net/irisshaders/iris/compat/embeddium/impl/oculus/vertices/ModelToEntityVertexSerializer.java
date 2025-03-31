@@ -1,4 +1,4 @@
-package net.irisshaders.iris.vertices.sodium;
+package net.irisshaders.iris.compat.embeddium.impl.oculus.vertices;
 
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.irisshaders.iris.vertices.IrisVertexFormats;

@@ -9,9 +9,7 @@ import com.llamalad7.mixinextras.sugar.Local;
 import com.mojang.blaze3d.vertex.PoseStack;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
-import net.minecraft.client.resources.model.ModelBakery;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.BlockDestructionProgress;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -44,7 +42,7 @@ public class EmbeddiumWorldRendererMixin {
             if (destructionProgresses != null && !destructionProgresses.isEmpty()) {
                 int progress = ((BlockDestructionProgress)destructionProgresses.last()).getProgress();
                 if (progress >= 0) {
-                    bufferSource = new SimpleCrumblingBufferSource(bufferSource, (RenderType) ModelBakery.DESTROY_TYPES.get(progress), pPoseStack, 1.0F);
+                    bufferSource = new SimpleCrumblingBufferSource(bufferSource, progress, pPoseStack, 1.0F);
                 }
 
                 original.call(instance, pBlockEntity, pPartialTick, pPoseStack, bufferSource);

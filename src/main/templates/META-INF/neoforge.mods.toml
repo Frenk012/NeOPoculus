@@ -8,7 +8,7 @@ issueTrackerURL="https://github.com/Yuqi154/NeOculus/issues"
 modId="oculus"
 version="${mod_version}"
 displayURL = "https://curseforge.com/minecraft/mc-mods/neoculus"
-displayName="NeOculus"
+displayName="NeOPoculus"
 logoFile="neoculus-logo.png"
 authors="NanoLive, dima_dencep, coderbot, IMS212, Justsnoopy30, FoundationGames, Yuqi154"
 description='''
@@ -81,3 +81,4 @@ file="META-INF/accesstransformer.cfg"
     versionRange = "[1.0.0,)"
     ordering = "AFTER"
     side = "CLIENT"
+

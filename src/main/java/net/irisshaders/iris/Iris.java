@@ -67,7 +67,7 @@ public class Iris {
 	 * easy branding changes (for forks). You'll still need to change this
 	 * separately in mixin plugin classes & the language files.
 	 */
-	public static final String MODNAME = "NeOculus";
+	public static final String MODNAME = "NeOPoculus";
 	public static final IrisLogging logger = new IrisLogging(MODNAME);
 	private static final Map<String, String> shaderPackOptionQueue = new HashMap<>();
 	// Change this for snapshots!
@@ -741,6 +741,8 @@ public class Iris {
 		wireframeKeybind = new KeyMapping("iris.keybind.wireframe", InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), "iris.keybinds");
 
 		DHCompat.run();
+
+		net.irisshaders.iris.horizon.HorizonLod.init();
 
 		try {
 			if (!Files.exists(getShaderpacksDirectory())) {

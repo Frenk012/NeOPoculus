@@ -4,11 +4,11 @@
   "iris.keybind.reload": "Polished yer eyes smooth",
   "iris.keybind.shaderPackSelection": "Glass eye Choosin Screen",
   "iris.keybind.toggleShaders": "Toggle ye special glass",
-  "iris.keybinds": "Yer NeOculus Wheel bounds",
+  "iris.keybinds": "Yer NeOPoculus Wheel bounds",
   "iris.shaders.reloaded.failure": "Failed to clean ye Glass eyes! Reason: %s",
   "iris.shaders.toggled.failure": "Failed to place ye Glass eyes back in! Reason: %s",
-  "iris.sodium.failure.title": "NeOculus failed to load!",
-  "iris.sodium.failure.reason": "Yee 'ave Embeddium in yer mods folder, however NeOculus includes it. Please close the game 'n remove Embeddium from yer mods Coffer.",
+  "iris.sodium.failure.title": "NeOPoculus failed to load!",
+  "iris.sodium.failure.reason": "Yee 'ave Embeddium in yer mods folder, however NeOPoculus includes it. Please close the game 'n remove Embeddium from yer mods Coffer.",
   "options.iris.apply": "Apply",
   "options.iris.refresh": "Refresh",
   "options.iris.openShaderPackFolder": "Open yer Coffer o' Glass Eyes",
@@ -29,6 +29,6 @@
   "pack.iris.select.title": "Select",
   "pack.iris.list.label": "+ Drop yer Glass eye files in this ole window t' add yer Glass eyes",
   "iris.sodium.failure.download": "Download Embeddium",
-  "iris.sodium.failure.reason.notFound": "NeOculus needs e' Embeddium for smooth sailin', but Embeddium ain't found. Find the Embeddium, add it to t'mods, and open the game.",
-  "iris.sodium.failure.reason.incompatible": "NeOculus needs e' Embeddium for smooth sailin', but the one here ain't it. Find t'correct Embeddium, add it to t'mods, throw overboard t'old one, and open the game."
+  "iris.sodium.failure.reason.notFound": "NeOPoculus needs e' Embeddium for smooth sailin', but Embeddium ain't found. Find the Embeddium, add it to t'mods, and open the game.",
+  "iris.sodium.failure.reason.incompatible": "NeOPoculus needs e' Embeddium for smooth sailin', but the one here ain't it. Find t'correct Embeddium, add it to t'mods, throw overboard t'old one, and open the game."
 }

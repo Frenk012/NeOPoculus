@@ -61,7 +61,7 @@ public class HorizonEmbeddiumGui {
 			.setId(id("horizon/distance"))
 			.setName(name("distance"))
 			.setTooltip(tooltip("distance"))
-			.setControl(o -> new SliderControl(o, 16, 512, 16, ControlValueFormatter.number()))
+			.setControl(o -> new SliderControl(o, 64, 4096, 64, ControlValueFormatter.number()))
 			.setBinding(new GenericBinding<>(HorizonConfig::setLodDistanceChunks, HorizonConfig::getLodDistanceChunks))
 			.setImpact(OptionImpact.HIGH)
 			.build();
@@ -93,6 +93,15 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.LOW)
 			.build();
 
+		Option<Integer> workerThreads = OptionImpl.createBuilder(Integer.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/worker_threads"))
+			.setName(name("threads"))
+			.setTooltip(tooltip("threads"))
+			.setControl(o -> new SliderControl(o, 1, 4, 1, ControlValueFormatter.number()))
+			.setBinding(new GenericBinding<>(HorizonConfig::setWorkerThreads, HorizonConfig::getWorkerThreads))
+			.setImpact(OptionImpact.MEDIUM)
+			.build();
+
 		Option<Integer> saveInterval = OptionImpl.createBuilder(Integer.TYPE, HorizonConfigStorage.INSTANCE)
 			.setId(id("horizon/save_interval"))
 			.setName(name("saveInterval"))
@@ -118,6 +127,7 @@ public class HorizonEmbeddiumGui {
 		OptionGroup performance = OptionGroup.createBuilder()
 			.setId(OptionIdentifier.create(id("horizon/performance")))
 			.add(uploads)
+			.add(workerThreads)
 			.add(saveInterval)
 			.build();
 

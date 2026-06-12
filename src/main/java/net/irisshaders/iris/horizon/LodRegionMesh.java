@@ -26,7 +26,7 @@ public final class LodRegionMesh {
 		float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
 		var buf = data.vertexData();
 		for (int i = 0; i < data.vertexCount(); i++) {
-			float y = buf.getFloat(i * LodMesher.STRIDE + 4);
+			float y = buf.getShort(i * LodMesher.STRIDE + LodMesher.Y_OFFSET);
 			if (y < min) min = y;
 			if (y > max) max = y;
 		}
@@ -39,9 +39,9 @@ public final class LodRegionMesh {
 		GL33C.glBindBuffer(GL33C.GL_ARRAY_BUFFER, vbo);
 		GL33C.glBufferData(GL33C.GL_ARRAY_BUFFER, data.vertexData(), GL33C.GL_STATIC_DRAW);
 		GL33C.glEnableVertexAttribArray(0);
-		GL33C.glVertexAttribPointer(0, 3, GL33C.GL_FLOAT, false, LodMesher.STRIDE, 0);
+		GL33C.glVertexAttribPointer(0, 3, GL33C.GL_SHORT, false, LodMesher.STRIDE, 0);
 		GL33C.glEnableVertexAttribArray(1);
-		GL33C.glVertexAttribPointer(1, 4, GL33C.GL_UNSIGNED_BYTE, true, LodMesher.STRIDE, 12);
+		GL33C.glVertexAttribPointer(1, 4, GL33C.GL_UNSIGNED_BYTE, true, LodMesher.STRIDE, LodMesher.COLOR_OFFSET);
 		GL33C.glBindVertexArray(0);
 		GL33C.glBindBuffer(GL33C.GL_ARRAY_BUFFER, 0);
 	}

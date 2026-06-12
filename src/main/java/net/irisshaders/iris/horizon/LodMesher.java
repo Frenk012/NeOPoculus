@@ -16,14 +16,42 @@ public final class LodMesher {
 	public static final int REGION_CHUNK_BITS = 3; // 8 chunks
 	private static final int UNKNOWN = Integer.MIN_VALUE;
 	private static final int WATER_COLOR = 0x3F76E4;
-	/** Bytes per vertex: 3 floats position + 4 bytes RGBA. */
-	public static final int STRIDE = 16;
+	/**
+	 * Bytes per vertex: 3 shorts position (region-local x/z and absolute y
+	 * all fit in 16 bits), 2 bytes pad for alignment, 4 bytes RGBA.
+	 */
+	public static final int STRIDE = 12;
+	/** Byte offset of the y coordinate within a vertex. */
+	public static final int Y_OFFSET = 2;
+	/** Byte offset of the color within a vertex. */
+	public static final int COLOR_OFFSET = 8;
 
 	public record MeshData(int regionX, int regionZ, int scale, ByteBuffer vertexData, int vertexCount) {
 		public void free() {
 			MemoryUtil.memFree(vertexData);
 		}
 	}
+
+	/**
+	 * Per-thread scratch: the worst-case vertex buffer and sampling grids
+	 * are reused across builds, and the queued result is copied into an
+	 * exactly-sized buffer. Without this, a burst of in-flight scale-1
+	 * builds could pin hundreds of MB of native memory in the upload queue.
+	 */
+	private static final class Scratch {
+		final ByteBuffer vertexScratch;
+		final int[] heights;
+		final int[] colors;
+
+		Scratch() {
+			int maxCells = (REGION_BLOCKS + 2) * (REGION_BLOCKS + 2);
+			vertexScratch = MemoryUtil.memAlloc(REGION_BLOCKS * REGION_BLOCKS * 5 * 6 * STRIDE);
+			heights = new int[maxCells];
+			colors = new int[maxCells];
+		}
+	}
+
+	private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
 
 	private LodMesher() {
 	}
@@ -67,32 +95,56 @@ public final class LodMesher {
 		ByteBuffer buf = MemoryUtil.memAlloc(maxVerts * STRIDE);
 
 		int verts = 0;
-		float ox, oz;
 		for (int cz = 0; cz < n; cz++) {
-			for (int cx = 0; cx < n; cx++) {
+			int z0 = cz * scale;
+			int z1 = z0 + scale;
+			int cx = 0;
+			while (cx < n) {
 				int gi = (cx + 1) + (cz + 1) * (n + 2);
 				int h = heights[gi];
 				if (h == UNKNOWN) {
+					cx++;
 					continue;
 				}
-				int color = colors[gi];
-				ox = cx * scale;
-				oz = cz * scale;
-				float s = scale;
+				int topColor = shade(colors[gi], slopeShade(heights, gi, n, scale));
 
-				// Top face.
+				// Greedy run: merge consecutive cells along X that share the
+				// same height and lit color into one top quad. Plains, water
+				// and snowfields collapse into a handful of quads.
+				int runEnd = cx + 1;
+				while (runEnd < n) {
+					int gj = (runEnd + 1) + (cz + 1) * (n + 2);
+					if (heights[gj] != h || shade(colors[gj], slopeShade(heights, gj, n, scale)) != topColor) {
+						break;
+					}
+					runEnd++;
+				}
+
+				int x0 = cx * scale;
+				int x1 = runEnd * scale;
 				verts += quad(buf,
-					ox, h, oz,
-					ox + s, h, oz,
-					ox + s, h, oz + s,
-					ox, h, oz + s,
-					shade(color, 1.0f));
+					x0, h, z0,
+					x1, h, z0,
+					x1, h, z1,
+					x0, h, z1,
+					topColor);
 
-				// Skirts toward lower or unknown neighbors.
-				verts += skirt(buf, heights[gi - 1], h, ox, oz, ox, oz + s, color, 0.6f, worldMinY);             // -X
-				verts += skirt(buf, heights[gi + 1], h, ox + s, oz + s, ox + s, oz, color, 0.6f, worldMinY);     // +X
-				verts += skirt(buf, heights[gi - (n + 2)], h, ox + s, oz, ox, oz, color, 0.8f, worldMinY);       // -Z
-				verts += skirt(buf, heights[gi + (n + 2)], h, ox, oz + s, ox + s, oz + s, color, 0.8f, worldMinY); // +Z
+				// X skirts only at the run boundaries; inside the run all
+				// heights are equal so no faces are possible there.
+				int giLast = runEnd + (cz + 1) * (n + 2);
+				verts += skirt(buf, heights[gi - 1], h, x0, z0, x0, z1, colors[gi], 0.6f, worldMinY);
+				verts += skirt(buf, heights[giLast + 1], h, x1, z1, x1, z0, colors[giLast], 0.6f, worldMinY);
+
+				// Z skirts per cell: they only emit where the row neighbor
+				// is lower, so flat areas stay free.
+				for (int k = cx; k < runEnd; k++) {
+					int gk = (k + 1) + (cz + 1) * (n + 2);
+					int ox = k * scale;
+					verts += skirt(buf, heights[gk - (n + 2)], h, ox + scale, z0, ox, z0, colors[gk], 0.8f, worldMinY);
+					verts += skirt(buf, heights[gk + (n + 2)], h, ox, z1, ox + scale, z1, colors[gk], 0.8f, worldMinY);
+				}
+
+				cx = runEnd;
 			}
 		}
 
@@ -180,7 +232,7 @@ public final class LodMesher {
 		return ((long) maxH << 32) | ((rr << 16) | (gg << 8) | bb);
 	}
 
-	private static int skirt(ByteBuffer buf, int neighborH, int h, float x1, float z1, float x2, float z2, int baseColor, float shade, int worldMinY) {
+	private static int skirt(ByteBuffer buf, int neighborH, int h, int x1, int z1, int x2, int z2, int baseColor, float shade, int worldMinY) {
 		int bottom = neighborH == UNKNOWN ? Math.max(worldMinY, h - 32) : neighborH;
 		if (bottom >= h) {
 			return 0;
@@ -193,15 +245,32 @@ public final class LodMesher {
 			shade(baseColor, shade));
 	}
 
+	/**
+	 * Directional shading from the terrain gradient (light from the
+	 * north-west): slopes facing the light brighten, slopes away darken.
+	 * This is what makes hills read as hills instead of color noise.
+	 */
+	private static float slopeShade(int[] heights, int gi, int n, int scale) {
+		int h = heights[gi];
+		int hw = heights[gi - 1] == UNKNOWN ? h : heights[gi - 1];
+		int he = heights[gi + 1] == UNKNOWN ? h : heights[gi + 1];
+		int hn = heights[gi - (n + 2)] == UNKNOWN ? h : heights[gi - (n + 2)];
+		int hs = heights[gi + (n + 2)] == UNKNOWN ? h : heights[gi + (n + 2)];
+		float dx = (he - hw) / (2.0f * scale);
+		float dz = (hs - hn) / (2.0f * scale);
+		float shadeValue = 1.0f - dx * 0.10f - dz * 0.13f;
+		return Math.clamp(shadeValue, 0.65f, 1.15f);
+	}
+
 	private static int shade(int rgb, float factor) {
-		int r = (int) (((rgb >> 16) & 0xFF) * factor);
-		int g = (int) (((rgb >> 8) & 0xFF) * factor);
-		int b = (int) ((rgb & 0xFF) * factor);
+		int r = Math.min(255, (int) (((rgb >> 16) & 0xFF) * factor));
+		int g = Math.min(255, (int) (((rgb >> 8) & 0xFF) * factor));
+		int b = Math.min(255, (int) ((rgb & 0xFF) * factor));
 		return (r << 16) | (g << 8) | b;
 	}
 
-	private static int quad(ByteBuffer buf, float x1, float y1, float z1, float x2, float y2, float z2,
-							float x3, float y3, float z3, float x4, float y4, float z4, int color) {
+	private static int quad(ByteBuffer buf, int x1, int y1, int z1, int x2, int y2, int z2,
+							int x3, int y3, int z3, int x4, int y4, int z4, int color) {
 		vertex(buf, x1, y1, z1, color);
 		vertex(buf, x2, y2, z2, color);
 		vertex(buf, x3, y3, z3, color);
@@ -211,10 +280,11 @@ public final class LodMesher {
 		return 6;
 	}
 
-	private static void vertex(ByteBuffer buf, float x, float y, float z, int rgb) {
-		buf.putFloat(x);
-		buf.putFloat(y);
-		buf.putFloat(z);
+	private static void vertex(ByteBuffer buf, int x, int y, int z, int rgb) {
+		buf.putShort((short) x);
+		buf.putShort((short) y);
+		buf.putShort((short) z);
+		buf.putShort((short) 0); // pad to a 4-byte boundary
 		buf.put((byte) ((rgb >> 16) & 0xFF));
 		buf.put((byte) ((rgb >> 8) & 0xFF));
 		buf.put((byte) (rgb & 0xFF));

@@ -45,6 +45,8 @@
   "options.iris.horizon.ringWidth.tooltip": "Width of each detail ring in blocks. Past each ring the LOD cell size doubles, halving geometry density.",
   "options.iris.horizon.uploads.tooltip": "How many freshly built LOD meshes may be uploaded to the GPU per frame. Lower values smooth out frame pacing while exploring.",
   "options.iris.horizon.saveInterval.tooltip": "Seconds between automatic saves of captured terrain data to disk.",
+  "options.iris.horizon.threads": "Worker Threads",
+  "options.iris.horizon.threads.tooltip": "Background threads used for LOD meshing and disk IO. Applied at game start.",
   "options.iris.refresh": "Refresh",
   "options.iris.openShaderPackFolder": "Open Shader Pack Folder...",
   "options.iris.shaderPackSettings": "Shader Pack Settings...",

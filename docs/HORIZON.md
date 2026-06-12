@@ -22,25 +22,46 @@ simplified terrain far beyond the server view distance.
   far plane is extended only while Horizon is active. Regions inside the
   vanilla render distance are skipped.
 
+## Level of detail
+
+Cell size is proportional to distance (constant screen-space error): one
+block per cell out to `lodRingWidth`, then doubling with every doubling of
+distance, reaching the coarsest level (64 blocks) only around 4000 chunks.
+The "collar" around the real render distance is always meshed at one block
+per cell and drawn in full overlap with real terrain: polygon offset lets
+real blocks win the depth test pixel-for-pixel, so the seam is exact and
+still-meshing chunks are backfilled by the LOD. Coarser distant meshes are
+cut by a per-chunk coverage mask with a dithered 16-block fade.
+
+Colors come from each block's top-face texture, softened into an 8x8 grid
+and sampled per column position, with biome tints applied; slope-based
+directional shading makes relief readable at distance. Greedy run-merging
+collapses flat areas into few quads; vertices are 12 bytes.
+
 ## Configuration (`config/neoculus-horizon.properties`)
 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `enabled` | `true` | Master toggle. |
-| `lodDistanceChunks` | `128` | LOD render distance in chunks (16–1024). |
-| `baseLodScale` | `4` | Blocks per LOD cell in the nearest ring (power of two). |
-| `lodRingWidth` | `1024` | Blocks per detail ring; cell size doubles each ring. |
+| `lodDistanceChunks` | `256` | LOD render distance in chunks (16–4096). |
+| `baseLodScale` | `1` | Minimum blocks per LOD cell (power of two). |
+| `lodRingWidth` | `1024` | Distance of the first detail ring; cell size doubles per ring after it. |
 | `maxUploadsPerFrame` | `4` | GPU mesh uploads allowed per frame. |
-| `saveIntervalSeconds` | `60` | Autosave interval for dirty LOD data. |
-| `renderWithShaders` | `true` | Render LOD terrain while a shader pack is active (flat-shaded into the pipeline's terrain buffers; disable per-pack if needed). |
+| `saveIntervalSeconds` | `60` | Autosave interval; far chunks are also evicted from memory after saving. |
+| `workerThreads` | auto (1–2) | Background meshing/IO threads (1–4, applied at start). |
+| `renderWithShaders` | `true` | Render LOD terrain while a shader pack is active. The pass restricts itself to color attachment 0 so G-buffer data is never corrupted; disable per-pack if a specific pack misbehaves. |
 
-## Known limitations (v1)
+All options are editable live from the Embeddium video settings ("Horizon
+LOD" page) or the vanilla video settings button.
+
+## Known limitations / roadmap
 
 - Heightmap-based: caves and overhangs are not represented at LOD distance.
-- In the 1–2 chunk overlap ring at the edge of the vanilla render distance,
-  LOD caps can briefly draw over real terrain until chunks are evicted.
-- With shader packs the LOD pass is flat-shaded (no shadows/PBR on LOD
-  terrain). Deeper integration via the existing `dhTerrain` program family is
-  the planned next step.
+- With shader packs the LOD is flat-shaded color + depth: depth-based
+  composite effects (fog, DOF, godrays) apply to it, but it does not receive
+  shadows or PBR. Full integration means rendering Horizon through the
+  shader pack's `dhTerrain` program family (the Iris transform pipeline for
+  it already exists in `pipeline/transform`, `Patch.DH_TERRAIN`); that is
+  the planned next milestone and removes the per-pack caveats entirely.
 - If Distant Horizons is installed, prefer it and set `enabled=false`; the
   existing DH compat in `compat/dh` gives full shader integration.

@@ -1,11 +1,11 @@
 package net.irisshaders.iris.horizon;
 
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
-import net.minecraft.world.level.material.MapColor;
 
 /**
  * Builds a LodChunk snapshot from a live client chunk. Runs on the client
@@ -26,7 +26,11 @@ public final class LodCapture {
 		for (int z = 0; z < 16; z++) {
 			for (int x = 0; x < 16; x++) {
 				int index = x + z * 16;
-				int top = chunk.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+				// MOTION_BLOCKING ignores grass, flowers and other
+				// decorations that WORLD_SURFACE counts: those put the LOD
+				// surface one block above the real ground and break the
+				// seam against loaded chunks. Leaves and water still count.
+				int top = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
 				if (top <= minY) {
 					// Empty column (e.g. void): mark as absent terrain.
 					lod.height[index] = (short) minY;
@@ -52,8 +56,7 @@ public final class LodCapture {
 					}
 				}
 
-				MapColor mapColor = state.getMapColor(chunk.getLevel(), pos.set(baseX + x, y, baseZ + z));
-				int rgb = mapColor == MapColor.NONE ? 0x7F7F7F : mapColor.col;
+				int rgb = LodColors.colorOf(state, (ClientLevel) chunk.getLevel(), pos.set(baseX + x, y, baseZ + z));
 
 				lod.height[index] = (short) (y + 1);
 				lod.waterHeight[index] = water;

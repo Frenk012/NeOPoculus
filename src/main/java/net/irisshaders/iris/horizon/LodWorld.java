@@ -21,15 +21,43 @@ public final class LodWorld {
 	 * that requires remeshing.
 	 */
 	public boolean put(LodChunk chunk) {
-		LodChunk previous = chunks.put(LodChunk.key(chunk.chunkX, chunk.chunkZ), chunk);
+		LodChunk previous = chunks.get(LodChunk.key(chunk.chunkX, chunk.chunkZ));
 		boolean changed = previous == null
 			|| !java.util.Arrays.equals(previous.height, chunk.height)
 			|| !java.util.Arrays.equals(previous.waterHeight, chunk.waterHeight)
 			|| !java.util.Arrays.equals(previous.color, chunk.color);
 		if (changed) {
+			// Mark dirty before publishing so concurrent eviction can never
+			// drop an unsaved chunk.
 			dirtyRegions.add(LodStorage.regionKey(chunk.chunkX >> 5, chunk.chunkZ >> 5));
 		}
+		chunks.put(LodChunk.key(chunk.chunkX, chunk.chunkZ), chunk);
 		return changed;
+	}
+
+	/**
+	 * Drops chunks farther than radius (in chunks, chebyshev) from the
+	 * center, but only those whose storage region has no unsaved changes:
+	 * evicted data is reloaded from disk on demand. Returns the storage
+	 * region keys that lost chunks, so the storage layer can allow reloads.
+	 */
+	public Set<Long> evictOutside(int centerChunkX, int centerChunkZ, int radiusChunks) {
+		Set<Long> touched = new java.util.HashSet<>();
+		for (LodChunk chunk : chunks.values()) {
+			if (Math.max(Math.abs(chunk.chunkX - centerChunkX), Math.abs(chunk.chunkZ - centerChunkZ)) <= radiusChunks) {
+				continue;
+			}
+			long storageRegion = LodStorage.regionKey(chunk.chunkX >> 5, chunk.chunkZ >> 5);
+			if (dirtyRegions.contains(storageRegion)) {
+				continue; // unsaved data, keep until the next save pass
+			}
+			// Two-arg remove: if a fresh capture replaced this chunk after
+			// the iterator read it, the newer (dirty) instance survives.
+			if (chunks.remove(LodChunk.key(chunk.chunkX, chunk.chunkZ), chunk)) {
+				touched.add(storageRegion);
+			}
+		}
+		return touched;
 	}
 
 	/** Insertion from disk: never marks dirty, never overwrites live data. */
@@ -39,6 +67,11 @@ public final class LodWorld {
 
 	public boolean contains(int chunkX, int chunkZ) {
 		return chunks.containsKey(LodChunk.key(chunkX, chunkZ));
+	}
+
+	/** Re-flags a storage region, e.g. after a failed save. */
+	public void markDirty(long storageRegionKey) {
+		dirtyRegions.add(storageRegionKey);
 	}
 
 	public Set<Long> drainDirtyRegions() {

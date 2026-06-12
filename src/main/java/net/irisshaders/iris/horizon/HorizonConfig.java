@@ -22,15 +22,17 @@ public class HorizonConfig {
 	/**
 	 * Maximum LOD render distance, in chunks, measured from the camera.
 	 */
-	private int lodDistanceChunks = 128;
+	private int lodDistanceChunks = 256;
 	/**
-	 * Base cell size (blocks per LOD cell) for the nearest LOD ring. Each
-	 * successive ring doubles the cell size.
+	 * Minimum cell size (blocks per LOD cell). 1 keeps the nearest LOD ring
+	 * at full block resolution, visually seamless with real chunks.
 	 */
-	private int baseLodScale = 4;
+	private int baseLodScale = 1;
 	/**
-	 * Width of each LOD ring, in blocks. Past each ring boundary the LOD
-	 * cell size doubles, halving geometry density.
+	 * Distance at which cells are still one block (with baseLodScale 1);
+	 * past it the cell size doubles with every doubling of distance, which
+	 * keeps the on-screen detail density constant. With 1024m the coarsest
+	 * level (64 blocks) is only reached around 4000 chunks away.
 	 */
 	private int lodRingWidth = 1024;
 	/**
@@ -42,6 +44,10 @@ public class HorizonConfig {
 	 * Interval, in seconds, between asynchronous saves of dirty LOD data.
 	 */
 	private int saveIntervalSeconds = 60;
+	/**
+	 * Background threads for meshing and disk IO. Applied at game start.
+	 */
+	private int workerThreads = Math.max(1, Math.min(2, Runtime.getRuntime().availableProcessors() / 4));
 	/**
 	 * Whether to render LOD terrain while a shader pack is active. The LOD
 	 * pass renders into the shader pipeline's terrain buffers with flat
@@ -73,11 +79,12 @@ public class HorizonConfig {
 		}
 
 		enabled = Boolean.parseBoolean(props.getProperty("enabled", Boolean.toString(enabled)));
-		lodDistanceChunks = clamp(parseInt(props, "lodDistanceChunks", lodDistanceChunks), 16, 1024);
+		lodDistanceChunks = clamp(parseInt(props, "lodDistanceChunks", lodDistanceChunks), 16, 4096);
 		baseLodScale = clampPow2(parseInt(props, "baseLodScale", baseLodScale), 1, 16);
 		lodRingWidth = clamp(parseInt(props, "lodRingWidth", lodRingWidth), 256, 8192);
 		maxUploadsPerFrame = clamp(parseInt(props, "maxUploadsPerFrame", maxUploadsPerFrame), 1, 64);
 		saveIntervalSeconds = clamp(parseInt(props, "saveIntervalSeconds", saveIntervalSeconds), 10, 3600);
+		workerThreads = clamp(parseInt(props, "workerThreads", workerThreads), 1, 4);
 		renderWithShaders = Boolean.parseBoolean(props.getProperty("renderWithShaders", Boolean.toString(renderWithShaders)));
 
 		if (!Files.exists(file)) {
@@ -93,6 +100,7 @@ public class HorizonConfig {
 		props.setProperty("lodRingWidth", Integer.toString(lodRingWidth));
 		props.setProperty("maxUploadsPerFrame", Integer.toString(maxUploadsPerFrame));
 		props.setProperty("saveIntervalSeconds", Integer.toString(saveIntervalSeconds));
+		props.setProperty("workerThreads", Integer.toString(workerThreads));
 		props.setProperty("renderWithShaders", Boolean.toString(renderWithShaders));
 
 		try (OutputStream out = Files.newOutputStream(path())) {
@@ -132,7 +140,7 @@ public class HorizonConfig {
 	}
 
 	public void setLodDistanceChunks(int value) {
-		this.lodDistanceChunks = clamp(value, 16, 1024);
+		this.lodDistanceChunks = clamp(value, 16, 4096);
 	}
 
 	public void setBaseLodScale(int value) {
@@ -149,6 +157,14 @@ public class HorizonConfig {
 
 	public void setSaveIntervalSeconds(int value) {
 		this.saveIntervalSeconds = clamp(value, 10, 3600);
+	}
+
+	public int getWorkerThreads() {
+		return workerThreads;
+	}
+
+	public void setWorkerThreads(int value) {
+		this.workerThreads = clamp(value, 1, 4);
 	}
 
 	public void setRenderWithShaders(boolean value) {

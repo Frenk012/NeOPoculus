@@ -40,6 +40,8 @@
   "options.iris.horizon.ringWidth.tooltip": "Larghezza di ogni anello di dettaglio in blocchi. Oltre ogni anello la cella LOD raddoppia, dimezzando la geometria.",
   "options.iris.horizon.uploads.tooltip": "Quante mesh LOD appena costruite possono essere caricate sulla GPU per frame. Valori bassi stabilizzano il frame pacing durante l'esplorazione.",
   "options.iris.horizon.saveInterval.tooltip": "Secondi tra i salvataggi automatici su disco del terreno catturato.",
+  "options.iris.horizon.threads": "Thread di lavoro",
+  "options.iris.horizon.threads.tooltip": "Thread in background per meshing LOD e IO su disco. Applicato all'avvio del gioco.",
   "options.iris.refresh": "Riavvia",
   "options.iris.openShaderPackFolder": "Apri La cartella delle shaders...",
   "options.iris.shaderPackSettings": "Impostazioni shaders...",

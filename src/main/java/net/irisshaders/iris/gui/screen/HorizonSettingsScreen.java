@@ -38,9 +38,9 @@ public class HorizonSettingsScreen extends OptionsSubScreen {
 
 		OptionInstance<Integer> distance = new OptionInstance<>(
 			"options.iris.horizon.distance", OptionInstance.noTooltip(),
-			(caption, value) -> Component.translatable("options.generic_value", caption, Component.translatable("options.chunks", value)),
-			new OptionInstance.IntRange(16, 512), config.getLodDistanceChunks(), value -> {
-				config.setLodDistanceChunks(value);
+			(caption, value) -> Component.translatable("options.generic_value", caption, Component.translatable("options.chunks", value * 64)),
+			new OptionInstance.IntRange(1, 64), Math.max(1, config.getLodDistanceChunks() / 64), value -> {
+				config.setLodDistanceChunks(value * 64);
 				config.save();
 				HorizonLod.INSTANCE.onConfigChanged();
 			});

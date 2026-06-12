@@ -50,8 +50,16 @@ public final class LodStorage {
 		return dimensionDir.resolve("r." + regionX + "." + regionZ + ".hlod");
 	}
 
-	/** Loads a storage region into the world if not already attempted. Worker thread only. */
-	public void loadRegionIfNeeded(LodWorld world, int regionX, int regionZ) {
+	/**
+	 * Forgets that a region was loaded, so a later loadRegionIfNeeded reads
+	 * it from disk again. Called after its chunks are evicted from memory.
+	 */
+	public void markUnloaded(long regionKey) {
+		loadedRegions.remove(regionKey);
+	}
+
+	/** Loads a storage region into the world if not already attempted. Worker threads only. */
+	public synchronized void loadRegionIfNeeded(LodWorld world, int regionX, int regionZ) {
 		if (!loadedRegions.add(regionKey(regionX, regionZ))) {
 			return;
 		}
@@ -66,6 +74,10 @@ public final class LodStorage {
 				return;
 			}
 			int count = in.readInt();
+			if (count < 0 || count > 32 * 32) {
+				Iris.logger.warn("Horizon: corrupt LOD region (chunk count " + count + "), skipping " + file);
+				return;
+			}
 			for (int i = 0; i < count; i++) {
 				int cx = in.readInt();
 				int cz = in.readInt();
@@ -80,8 +92,15 @@ public final class LodStorage {
 		}
 	}
 
-	/** Writes one storage region from the world to disk. Worker thread only. */
-	public void saveRegion(LodWorld world, int regionX, int regionZ) {
+	/**
+	 * Writes one storage region from the world to disk. Worker threads
+	 * only; synchronized so concurrent save/load of the same files cannot
+	 * interleave.
+	 *
+	 * @return false if the data could not be committed; the caller must
+	 * keep the region flagged dirty so the data is neither lost nor evicted.
+	 */
+	public synchronized boolean saveRegion(LodWorld world, int regionX, int regionZ) {
 		// Saving implies its content is fully in memory; mark as loaded so a
 		// later load does not overwrite newer in-memory data.
 		loadRegionIfNeeded(world, regionX, regionZ);
@@ -89,7 +108,7 @@ public final class LodStorage {
 		java.util.List<LodChunk> toWrite = new java.util.ArrayList<>();
 		world.forEachInStorageRegion(regionX, regionZ, toWrite::add);
 		if (toWrite.isEmpty()) {
-			return;
+			return true;
 		}
 
 		Path file = regionFile(regionX, regionZ);
@@ -108,12 +127,14 @@ public final class LodStorage {
 			}
 		} catch (IOException e) {
 			Iris.logger.error("Horizon: failed to write LOD region " + tmp, e);
-			return;
+			return false;
 		}
 		try {
 			Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			return true;
 		} catch (IOException e) {
 			Iris.logger.error("Horizon: failed to commit LOD region " + file, e);
+			return false;
 		}
 	}
 }

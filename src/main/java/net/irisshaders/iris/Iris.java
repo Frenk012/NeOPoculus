@@ -103,6 +103,12 @@ public class Iris {
 			modEventBus.addListener(this::onKeyRegister);
 			NeoForge.EVENT_BUS.addListener(this::onKeyInput);
 
+			if (FMLLoader.getDist().isClient()) {
+				modEventBus.addListener((net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent event) ->
+					event.registerReloadListener((net.minecraft.server.packs.resources.ResourceManagerReloadListener)
+						resourceManager -> net.irisshaders.iris.horizon.LodColors.clearCache()));
+			}
+
 			IRIS_VERSION = ModList.get().getModContainerById(MODID).get().getModInfo().getVersion().toString();
 			if(FMLLoader.getDist().isClient())
 				modContainer.registerExtensionPoint(IConfigScreenFactory.class, ScreenHandler::registerConfigScreen);

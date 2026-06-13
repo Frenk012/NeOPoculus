@@ -105,14 +105,10 @@ public final class LodRenderer {
 				if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
 					covered = texture(u_chunkMask, uv).r;
 				}
-				if (covered > 0.999) {
+				// Hard cut against loaded chunks. The previous dithered fade
+				// left a whitish partial-LOD halo ring around the player.
+				if (covered > 0.5) {
 					discard;
-				}
-				if (covered > 0.001) {
-					float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-					if (covered > n) {
-						discard;
-					}
 				}
 			}
 			// No distance fog on LOD: it produced a visible band at the

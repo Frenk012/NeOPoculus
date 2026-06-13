@@ -449,7 +449,11 @@ public final class HorizonLod {
 
 		float brightness;
 		if (level.dimensionType().hasSkyLight()) {
-			brightness = Math.max(0.25f, 1.0f - level.getSkyDarken() * 0.068f);
+			// getSkyDarken is 0 (full day) .. 11 (full night). Map to a wide
+			// brightness range so the LOD visibly follows day/night even
+			// without a shader pack handling it.
+			float t = 1.0f - Math.min(1.0f, level.getSkyDarken() / 11.0f);
+			brightness = 0.15f + t * 0.85f;
 		} else {
 			brightness = 0.75f;
 		}

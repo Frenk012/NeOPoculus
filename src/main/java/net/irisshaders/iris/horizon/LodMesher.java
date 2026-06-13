@@ -65,9 +65,12 @@ public final class LodMesher {
 		int n = REGION_BLOCKS / scale;
 
 		// Sample an (n+2)^2 grid including a one-cell border from
-		// neighboring regions so skirts at region edges line up.
-		int[] heights = new int[(n + 2) * (n + 2)];
-		int[] colors = new int[(n + 2) * (n + 2)];
+		// neighboring regions so skirts at region edges line up. The grids
+		// are pooled per thread; every used slot is written below before
+		// being read, so stale data from previous builds is harmless.
+		Scratch scratch = SCRATCH.get();
+		int[] heights = scratch.heights;
+		int[] colors = scratch.colors;
 
 		boolean any = false;
 		for (int cz = -1; cz <= n; cz++) {
@@ -90,9 +93,10 @@ public final class LodMesher {
 			return null;
 		}
 
-		// Worst case: every cell emits a top plus four skirts.
-		int maxVerts = n * n * 5 * 6;
-		ByteBuffer buf = MemoryUtil.memAlloc(maxVerts * STRIDE);
+		// Build into the reusable worst-case scratch buffer; the result is
+		// copied into an exactly-sized allocation before being queued.
+		ByteBuffer buf = scratch.vertexScratch;
+		buf.clear();
 
 		int verts = 0;
 		for (int cz = 0; cz < n; cz++) {
@@ -149,12 +153,12 @@ public final class LodMesher {
 		}
 
 		if (verts == 0) {
-			MemoryUtil.memFree(buf);
 			return null;
 		}
 
-		buf.flip();
-		return new MeshData(regionX, regionZ, scale, buf, verts);
+		ByteBuffer exact = MemoryUtil.memAlloc(verts * STRIDE);
+		MemoryUtil.memCopy(MemoryUtil.memAddress(buf), MemoryUtil.memAddress(exact), (long) verts * STRIDE);
+		return new MeshData(regionX, regionZ, scale, exact, verts);
 	}
 
 	/**

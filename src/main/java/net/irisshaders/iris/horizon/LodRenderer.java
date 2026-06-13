@@ -27,11 +27,14 @@ public final class LodRenderer {
 	/**
 	 * Bumped on world unload; results from worker jobs started under an
 	 * older epoch are dropped so terrain never leaks across dimensions.
+	 * Guarded by epochLock together with the upload queue so a submit can
+	 * never slip a stale mesh past a concurrent clear().
 	 */
 	private volatile int epoch;
+	private final Object epochLock = new Object();
 
 	private int program;
-	private int uMvp, uOffset, uFogColor, uFogStart, uFogEnd, uBrightness, uCamXZ, uMaskOrigin, uMaskTexels, uChunkMask, uUseMask;
+	private int uMvp, uOffset, uFogColor, uFogStart, uFogEnd, uBrightness, uMaskRel, uMaskTexels, uChunkMask, uUseMask;
 	private boolean shaderFailed;
 
 	private final Matrix4f mvp = new Matrix4f();
@@ -44,7 +47,9 @@ public final class LodRenderer {
 	 * fragment shader so the LOD fades out over ~16 blocks against real
 	 * terrain (dithered), instead of cutting along a camera-centered circle.
 	 */
-	private static final int MASK_SIZE = 96;
+	// Covers render distances up to ~78 chunks (mods can push past the
+	// vanilla 32); kept a multiple of 4 for GL unpack alignment.
+	private static final int MASK_SIZE = 160;
 	private int maskTexture;
 	private final java.nio.ByteBuffer maskBuffer = org.lwjgl.system.MemoryUtil.memAlloc(MASK_SIZE * MASK_SIZE);
 	private final byte[] maskData = new byte[MASK_SIZE * MASK_SIZE];
@@ -78,9 +83,11 @@ public final class LodRenderer {
 		uniform float u_fogStart;
 		uniform float u_fogEnd;
 		uniform float u_brightness;
-		uniform vec2 u_camXZ;
 		uniform sampler2D u_chunkMask;
-		uniform vec2 u_maskOrigin;
+		// Camera position relative to the mask origin, in chunk units;
+		// precomputed in double precision so the mask stays aligned even
+		// millions of blocks from the origin.
+		uniform vec2 u_maskRel;
 		uniform float u_maskTexels;
 		uniform int u_useMask;
 		out vec4 fragColor;
@@ -93,7 +100,7 @@ public final class LodRenderer {
 			// they get cut by the per-chunk coverage mask, dithered along
 			// the linear ramp at its border.
 			if (u_useMask == 1) {
-				vec2 uv = (((vRelPos.xz + u_camXZ) / 16.0) - u_maskOrigin) / u_maskTexels;
+				vec2 uv = (vRelPos.xz / 16.0 + u_maskRel) / u_maskTexels;
 				float covered = 0.0;
 				if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
 					covered = texture(u_chunkMask, uv).r;
@@ -137,17 +144,19 @@ public final class LodRenderer {
 
 	/** Called from the meshing worker with finished vertex data. */
 	public void submit(long regionKey, LodMesher.MeshData data, int jobEpoch) {
-		if (jobEpoch != epoch) {
-			if (data != null) {
-				data.free();
+		synchronized (epochLock) {
+			if (jobEpoch != epoch) {
+				if (data != null) {
+					data.free();
+				}
+				inFlight.remove(regionKey);
+				return;
 			}
-			inFlight.remove(regionKey);
-			return;
-		}
-		if (data != null) {
-			uploadQueue.add(data);
-		} else {
-			inFlight.remove(regionKey);
+			if (data != null) {
+				uploadQueue.add(data);
+			} else {
+				inFlight.remove(regionKey);
+			}
 		}
 	}
 
@@ -242,14 +251,17 @@ public final class LodRenderer {
 		GL33C.glUniform1f(uFogStart, fogStart);
 		GL33C.glUniform1f(uFogEnd, fogEnd);
 		GL33C.glUniform1f(uBrightness, brightness);
-		GL33C.glUniform2f(uCamXZ, (float) camX, (float) camZ);
-		GL33C.glUniform2f(uMaskOrigin, maskOriginX, maskOriginZ);
+		GL33C.glUniform2f(uMaskRel, (float) (camX / 16.0 - maskOriginX), (float) (camZ / 16.0 - maskOriginZ));
 		GL33C.glUniform1f(uMaskTexels, MASK_SIZE);
 		GL33C.glUniform1i(uChunkMask, 0);
 
 		int camChunkX = Math.floorDiv((int) Math.floor(camX), 16);
 		int camChunkZ = Math.floorDiv((int) Math.floor(camZ), 16);
 		int lastUseMask = -1;
+		// Cheap radial reject before the frustum test; also hides meshes
+		// instantly when the LOD distance is lowered, before eviction runs.
+		double maxDist = HorizonConfig.get().getLodDistanceBlocks() + 192.0;
+		double maxDistSq = maxDist * maxDist;
 
 		for (LodRegionMesh mesh : meshes.values()) {
 			// Deep-interior skip: drop draws only for regions whose chunks
@@ -266,6 +278,13 @@ public final class LodRenderer {
 
 			float ox = (float) (mesh.regionX * (long) LodMesher.REGION_BLOCKS - camX);
 			float oz = (float) (mesh.regionZ * (long) LodMesher.REGION_BLOCKS - camZ);
+
+			double centerX = ox + LodMesher.REGION_BLOCKS * 0.5;
+			double centerZ = oz + LodMesher.REGION_BLOCKS * 0.5;
+			if (centerX * centerX + centerZ * centerZ > maxDistSq) {
+				continue;
+			}
+
 			float oy = (float) -camY;
 			if (!frustum.testAab(ox, mesh.minY + oy, oz, ox + LodMesher.REGION_BLOCKS, mesh.maxY + oy, oz + LodMesher.REGION_BLOCKS)) {
 				continue;
@@ -311,18 +330,7 @@ public final class LodRenderer {
 		maskCenterX = camChunkX;
 		maskCenterZ = camChunkZ;
 
-		if (maskTexture == 0) {
-			maskTexture = GL33C.glGenTextures();
-			int prev = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
-			GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
-			GL33C.glTexImage2D(GL33C.GL_TEXTURE_2D, 0, GL33C.GL_R8, MASK_SIZE, MASK_SIZE, 0, GL33C.GL_RED, GL33C.GL_UNSIGNED_BYTE, (java.nio.ByteBuffer) null);
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_LINEAR);
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_LINEAR);
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_S, GL33C.GL_CLAMP_TO_EDGE);
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_T, GL33C.GL_CLAMP_TO_EDGE);
-			GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prev);
-		}
-
+		// Build the mask data on the CPU first (no GL calls here).
 		maskOriginX = camChunkX - MASK_SIZE / 2;
 		maskOriginZ = camChunkZ - MASK_SIZE / 2;
 
@@ -341,10 +349,46 @@ public final class LodRenderer {
 
 		maskBuffer.clear();
 		maskBuffer.put(maskData).flip();
-		int prev = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
+
+		// Harden the pixel-store state before touching client memory. Minecraft,
+		// Embeddium and other mods leave GL_UNPACK_ROW_LENGTH / a bound
+		// PIXEL_UNPACK_BUFFER set from their own atlas/font uploads; either one
+		// makes glTexSubImage2D read our tightly-packed buffer with the wrong
+		// stride (or treat it as a PBO offset), overrunning it and crashing the
+		// GPU driver natively. Save, normalize, then restore.
+		int prevTex = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
+		int prevUnpackBuffer = GL33C.glGetInteger(GL33C.GL_PIXEL_UNPACK_BUFFER_BINDING);
+		int prevRowLength = GL33C.glGetInteger(GL33C.GL_UNPACK_ROW_LENGTH);
+		int prevSkipRows = GL33C.glGetInteger(GL33C.GL_UNPACK_SKIP_ROWS);
+		int prevSkipPixels = GL33C.glGetInteger(GL33C.GL_UNPACK_SKIP_PIXELS);
+		int prevAlignment = GL33C.glGetInteger(GL33C.GL_UNPACK_ALIGNMENT);
+
+		GL33C.glBindBuffer(GL33C.GL_PIXEL_UNPACK_BUFFER, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ROW_LENGTH, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_ROWS, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_PIXELS, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 1);
+
+		boolean firstTime = maskTexture == 0;
+		if (firstTime) {
+			maskTexture = GL33C.glGenTextures();
+		}
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
+		if (firstTime) {
+			GL33C.glTexImage2D(GL33C.GL_TEXTURE_2D, 0, GL33C.GL_R8, MASK_SIZE, MASK_SIZE, 0, GL33C.GL_RED, GL33C.GL_UNSIGNED_BYTE, (java.nio.ByteBuffer) null);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_LINEAR);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_LINEAR);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_S, GL33C.GL_CLAMP_TO_EDGE);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_T, GL33C.GL_CLAMP_TO_EDGE);
+		}
 		GL33C.glTexSubImage2D(GL33C.GL_TEXTURE_2D, 0, 0, 0, MASK_SIZE, MASK_SIZE, GL33C.GL_RED, GL33C.GL_UNSIGNED_BYTE, maskBuffer);
-		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prev);
+
+		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prevTex);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ROW_LENGTH, prevRowLength);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_ROWS, prevSkipRows);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_PIXELS, prevSkipPixels);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, prevAlignment);
+		GL33C.glBindBuffer(GL33C.GL_PIXEL_UNPACK_BUFFER, prevUnpackBuffer);
 	}
 
 	/** CPU-side draw skip: true when all 8x8 chunks of a region are covered. */
@@ -389,8 +433,7 @@ public final class LodRenderer {
 			uFogStart = GL33C.glGetUniformLocation(program, "u_fogStart");
 			uFogEnd = GL33C.glGetUniformLocation(program, "u_fogEnd");
 			uBrightness = GL33C.glGetUniformLocation(program, "u_brightness");
-			uCamXZ = GL33C.glGetUniformLocation(program, "u_camXZ");
-			uMaskOrigin = GL33C.glGetUniformLocation(program, "u_maskOrigin");
+			uMaskRel = GL33C.glGetUniformLocation(program, "u_maskRel");
 			uMaskTexels = GL33C.glGetUniformLocation(program, "u_maskTexels");
 			uChunkMask = GL33C.glGetUniformLocation(program, "u_chunkMask");
 			uUseMask = GL33C.glGetUniformLocation(program, "u_useMask");
@@ -414,7 +457,14 @@ public final class LodRenderer {
 
 	/** Render-thread: frees all GPU resources (world unload). */
 	public void clear() {
-		epoch++;
+		synchronized (epochLock) {
+			epoch++;
+			LodMesher.MeshData pending;
+			while ((pending = uploadQueue.poll()) != null) {
+				pending.free();
+			}
+			inFlight.clear();
+		}
 		if (maskTexture != 0) {
 			GL33C.glDeleteTextures(maskTexture);
 			maskTexture = 0;
@@ -425,10 +475,5 @@ public final class LodRenderer {
 			mesh.delete();
 		}
 		meshes.clear();
-		LodMesher.MeshData data;
-		while ((data = uploadQueue.poll()) != null) {
-			data.free();
-		}
-		inFlight.clear();
 	}
 }

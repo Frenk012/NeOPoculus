@@ -20,7 +20,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(value = LevelRenderer.class, priority = 999)
 public class MixinLevelRenderer_Horizon {
-	@Inject(method = "renderLevel", at = @At(value = "CONSTANT", args = "stringValue=translucent"))
+	// require = 0: if another mod reshapes renderLevel and the constant
+	// disappears, Horizon silently stays off instead of crashing the game.
+	@Inject(method = "renderLevel", at = @At(value = "CONSTANT", args = "stringValue=translucent"), require = 0)
 	private void iris$horizonRenderLod(DeltaTracker deltaTracker, boolean renderBlockOutline, Camera camera,
 									   GameRenderer gameRenderer, LightTexture lightTexture,
 									   Matrix4f modelView, Matrix4f projection, CallbackInfo ci) {

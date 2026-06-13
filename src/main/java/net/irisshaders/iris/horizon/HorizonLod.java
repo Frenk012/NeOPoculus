@@ -449,11 +449,12 @@ public final class HorizonLod {
 
 		float brightness;
 		if (level.dimensionType().hasSkyLight()) {
-			// getSkyDarken is 0 (full day) .. 11 (full night). Map to a wide
-			// brightness range so the LOD visibly follows day/night even
-			// without a shader pack handling it.
-			float t = 1.0f - Math.min(1.0f, level.getSkyDarken() / 11.0f);
-			brightness = 0.15f + t * 0.85f;
+			// Drive brightness from the actual sun angle so the LOD follows
+			// the visible day/night cycle (day ~1.0, night ~0.15), even when
+			// no shader pack handles it.
+			float f = level.getTimeOfDay(1.0f);
+			float d = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.cos(f * 6.2831855f) * 2.0f + 0.5f, 0.0f, 1.0f);
+			brightness = 0.15f + d * 0.85f;
 		} else {
 			brightness = 0.75f;
 		}

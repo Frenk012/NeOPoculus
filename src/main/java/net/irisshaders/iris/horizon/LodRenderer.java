@@ -34,7 +34,7 @@ public final class LodRenderer {
 	private final Object epochLock = new Object();
 
 	private int program;
-	private int uMvp, uOffset, uFogColor, uFogStart, uFogEnd, uBrightness, uMaskRel, uMaskTexels, uChunkMask, uUseMask;
+	private int uMvp, uOffset, uFogColor, uFogStart, uFogEnd, uBrightness, uMinDist, uMaskRel, uMaskTexels, uChunkMask, uUseMask;
 	private boolean shaderFailed;
 
 	private final Matrix4f mvp = new Matrix4f();
@@ -83,6 +83,7 @@ public final class LodRenderer {
 		uniform float u_fogStart;
 		uniform float u_fogEnd;
 		uniform float u_brightness;
+		uniform float u_minDist;
 		uniform sampler2D u_chunkMask;
 		// Camera position relative to the mask origin, in chunk units;
 		// precomputed in double precision so the mask stays aligned even
@@ -92,6 +93,12 @@ public final class LodRenderer {
 		uniform int u_useMask;
 		out vec4 fragColor;
 		void main() {
+			// Never draw LOD within the loaded-chunk radius, from any angle.
+			// The XZ coverage mask alone left a flat LOD sheet over loaded
+			// chunks when viewed from high above; this hard radial cut removes it.
+			if (length(vRelPos.xz) < u_minDist) {
+				discard;
+			}
 			// Full-resolution collar meshes (u_useMask == 0) render in
 			// complete overlap with real terrain: polygon offset makes real
 			// blocks win the depth test pixel-for-pixel, so the seam is
@@ -246,6 +253,8 @@ public final class LodRenderer {
 		GL33C.glUniform1f(uFogStart, fogStart);
 		GL33C.glUniform1f(uFogEnd, fogEnd);
 		GL33C.glUniform1f(uBrightness, brightness);
+		// Loaded-chunk radius in blocks; LOD is discarded inside it.
+		GL33C.glUniform1f(uMinDist, Math.max(0, (renderDistanceChunks - 1)) * 16.0f);
 		GL33C.glUniform2f(uMaskRel, (float) (camX / 16.0 - maskOriginX), (float) (camZ / 16.0 - maskOriginZ));
 		GL33C.glUniform1f(uMaskTexels, MASK_SIZE);
 		GL33C.glUniform1i(uChunkMask, 0);
@@ -433,6 +442,7 @@ public final class LodRenderer {
 			uFogStart = GL33C.glGetUniformLocation(program, "u_fogStart");
 			uFogEnd = GL33C.glGetUniformLocation(program, "u_fogEnd");
 			uBrightness = GL33C.glGetUniformLocation(program, "u_brightness");
+			uMinDist = GL33C.glGetUniformLocation(program, "u_minDist");
 			uMaskRel = GL33C.glGetUniformLocation(program, "u_maskRel");
 			uMaskTexels = GL33C.glGetUniformLocation(program, "u_maskTexels");
 			uChunkMask = GL33C.glGetUniformLocation(program, "u_chunkMask");

@@ -290,7 +290,10 @@ public final class LodRenderer {
 				continue;
 			}
 
-			int useMask = mesh.scale > 1 ? 1 : 0;
+			// Always cut LOD against the loaded-chunk mask, including the
+			// full-resolution collar — otherwise LOD stays drawn on top of
+			// real chunks the player has already loaded.
+			int useMask = 1;
 			if (useMask != lastUseMask) {
 				GL33C.glUniform1i(uUseMask, useMask);
 				lastUseMask = useMask;

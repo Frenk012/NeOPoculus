@@ -444,8 +444,10 @@ public final class HorizonLod {
 		double camZ = camera.getPosition().z;
 
 		int lodDist = HorizonConfig.get().getLodDistanceBlocks();
-		float fogStart = lodDist * 0.55f;
-		float fogEnd = lodDist * 0.98f;
+		// Keep the contact zone with loaded chunks fog-free; only fade the
+		// far horizon. A near fog start put a colored band right at the seam.
+		float fogStart = lodDist * 0.80f;
+		float fogEnd = lodDist * 1.0f;
 
 		float brightness;
 		if (level.dimensionType().hasSkyLight()) {

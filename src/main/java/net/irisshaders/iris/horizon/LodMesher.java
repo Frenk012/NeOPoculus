@@ -156,8 +156,13 @@ public final class LodMesher {
 			return null;
 		}
 
+		// Copy from the START of the scratch buffer. memAddress() returns the
+		// address at the buffer's CURRENT position, which here is the end of
+		// the written data — using it copied uninitialized memory (and stale
+		// vertices left by the previous region built on this reused per-thread
+		// scratch), scattering garbage geometry. memAddress0() ignores position.
 		ByteBuffer exact = MemoryUtil.memAlloc(verts * STRIDE);
-		MemoryUtil.memCopy(MemoryUtil.memAddress(buf), MemoryUtil.memAddress(exact), (long) verts * STRIDE);
+		MemoryUtil.memCopy(MemoryUtil.memAddress0(buf), MemoryUtil.memAddress0(exact), (long) verts * STRIDE);
 		return new MeshData(regionX, regionZ, scale, exact, verts);
 	}
 

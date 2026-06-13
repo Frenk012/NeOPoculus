@@ -115,10 +115,9 @@ public final class LodRenderer {
 					}
 				}
 			}
-			float dist = length(vRelPos.xz);
-			float fog = smoothstep(u_fogStart, u_fogEnd, dist);
-			vec3 lit = vColor.rgb * u_brightness;
-			fragColor = vec4(mix(lit, u_fogColor.rgb, fog), 1.0);
+			// No distance fog on LOD: it produced a visible band at the
+			// contact with loaded chunks. Render flat lit color.
+			fragColor = vec4(vColor.rgb * u_brightness, 1.0);
 		}
 		""";
 

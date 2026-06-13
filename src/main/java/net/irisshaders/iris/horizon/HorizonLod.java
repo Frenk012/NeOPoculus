@@ -52,6 +52,10 @@ public final class HorizonLod {
 	private int tickCounter;
 	private boolean registered;
 
+	/** Chunks awaiting LOD capture; drained a few per tick to avoid spikes when moving. */
+	private final java.util.concurrent.ConcurrentLinkedQueue<LevelChunk> captureQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+	private static final int MAX_CAPTURES_PER_TICK = 8;
+
 	/** Incremental scan cursor: ring currently being swept and its center. */
 	private int scanRing;
 	private int scanCenterRx = Integer.MIN_VALUE;
@@ -107,7 +111,7 @@ public final class HorizonLod {
 			return;
 		}
 		ensureWorld(level);
-		captureChunk(chunk);
+		captureQueue.add(chunk);
 	}
 
 	private void onChunkUnload(ChunkEvent.Unload event) {
@@ -116,7 +120,7 @@ public final class HorizonLod {
 			return;
 		}
 		// Final snapshot: catches any block changes made while loaded.
-		captureChunk(chunk);
+		captureQueue.add(chunk);
 	}
 
 	private void captureChunk(LevelChunk chunk) {
@@ -203,6 +207,7 @@ public final class HorizonLod {
 		worldDimension = null;
 		dirtyRenderRegions.clear();
 		emptyRenderRegions.clear();
+		captureQueue.clear();
 		if (w != null && s != null) {
 			// Flush every dirty storage region before dropping the world.
 			// Failures are retried once; afterwards the world is gone and
@@ -231,6 +236,17 @@ public final class HorizonLod {
 		}
 
 		tickCounter++;
+
+		// Spread chunk captures over ticks so fast movement (many chunk
+		// loads at once) doesn't stall the client thread in a burst.
+		for (int n = 0; n < MAX_CAPTURES_PER_TICK; n++) {
+			LevelChunk chunk = captureQueue.poll();
+			if (chunk == null) {
+				break;
+			}
+			captureChunk(chunk);
+		}
+
 		scheduleMeshes(mc);
 
 		// Empty-region markers are tiny but unbounded while exploring; a

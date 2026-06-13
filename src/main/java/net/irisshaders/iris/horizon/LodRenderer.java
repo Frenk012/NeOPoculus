@@ -323,9 +323,11 @@ public final class LodRenderer {
 	private void updateChunkMask(net.minecraft.client.multiplayer.ClientLevel level, int camChunkX, int camChunkZ, int renderDistanceChunks) {
 		// Chunk load state changes a few times per second at most: rebuild
 		// when the camera crosses a chunk border, or every 8 frames.
-		boolean stale = maskTexture == 0
-			|| camChunkX != maskCenterX || camChunkZ != maskCenterZ
-			|| ++maskAge >= 8;
+		boolean moved = camChunkX != maskCenterX || camChunkZ != maskCenterZ;
+		maskAge++;
+		// Cap rebuilds to at most every 3 frames even while moving fast
+		// (each rebuild is 160x160 hasChunk probes + a texture upload).
+		boolean stale = maskTexture == 0 || (moved && maskAge >= 3) || maskAge >= 8;
 		if (!stale) {
 			return;
 		}

@@ -93,12 +93,6 @@ public final class LodRenderer {
 		uniform int u_useMask;
 		out vec4 fragColor;
 		void main() {
-			// Never draw LOD within the loaded-chunk radius, from any angle.
-			// The XZ coverage mask alone left a flat LOD sheet over loaded
-			// chunks when viewed from high above; this hard radial cut removes it.
-			if (length(vRelPos.xz) < u_minDist) {
-				discard;
-			}
 			// Full-resolution collar meshes (u_useMask == 0) render in
 			// complete overlap with real terrain: polygon offset makes real
 			// blocks win the depth test pixel-for-pixel, so the seam is
@@ -385,8 +379,10 @@ public final class LodRenderer {
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
 		if (firstTime) {
 			GL33C.glTexImage2D(GL33C.GL_TEXTURE_2D, 0, GL33C.GL_R8, MASK_SIZE, MASK_SIZE, 0, GL33C.GL_RED, GL33C.GL_UNSIGNED_BYTE, (java.nio.ByteBuffer) null);
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_LINEAR);
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_LINEAR);
+			// Nearest: each chunk is either covered or not, so the LOD cut is
+			// exactly chunk-aligned with no fuzzy band or gap at the boundary.
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_NEAREST);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_NEAREST);
 			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_S, GL33C.GL_CLAMP_TO_EDGE);
 			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_T, GL33C.GL_CLAMP_TO_EDGE);
 		}

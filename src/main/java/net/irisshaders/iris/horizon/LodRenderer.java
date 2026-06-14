@@ -106,9 +106,12 @@ public final class LodRenderer {
 				if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
 					covered = texture(u_chunkMask, uv).r;
 				}
-				// Hard cut against loaded chunks. The previous dithered fade
-				// left a whitish partial-LOD halo ring around the player.
-				if (covered > 0.5) {
+				// Dither over a narrow band (~half a chunk) at the boundary so
+				// the LOD/real transition softens instead of popping per chunk.
+				// Linear mask gives a 1-chunk ramp; the 0.3..0.7 window keeps
+				// the blended band to roughly the outer half chunk.
+				float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+				if (covered > mix(0.3, 0.7, n)) {
 					discard;
 				}
 			}
@@ -340,11 +343,15 @@ public final class LodRenderer {
 		var chunkSource = level.getChunkSource();
 		for (int j = 0; j < MASK_SIZE; j++) {
 			int cz = maskOriginZ + j;
-			int dz = Math.abs(cz - camChunkZ);
+			int dz = cz - camChunkZ;
 			for (int i = 0; i < MASK_SIZE; i++) {
 				int cx = maskOriginX + i;
-				boolean covered = dz <= renderDistanceChunks
-					&& Math.abs(cx - camChunkX) <= renderDistanceChunks
+				int dx = cx - camChunkX;
+				// Euclidean circle to match vanilla's circular chunk rendering:
+				// a chebyshev square left the diagonal corners (loaded but not
+				// rendered) marked covered, so neither real terrain nor LOD drew
+				// there. Circle coverage removes that perimeter gap.
+				boolean covered = (dx * dx + dz * dz) <= renderDistanceChunks * renderDistanceChunks
 					&& chunkSource.hasChunk(cx, cz);
 				maskData[i + j * MASK_SIZE] = covered ? (byte) 255 : 0;
 			}
@@ -379,10 +386,10 @@ public final class LodRenderer {
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
 		if (firstTime) {
 			GL33C.glTexImage2D(GL33C.GL_TEXTURE_2D, 0, GL33C.GL_R8, MASK_SIZE, MASK_SIZE, 0, GL33C.GL_RED, GL33C.GL_UNSIGNED_BYTE, (java.nio.ByteBuffer) null);
-			// Nearest: each chunk is either covered or not, so the LOD cut is
-			// exactly chunk-aligned with no fuzzy band or gap at the boundary.
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_NEAREST);
-			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_NEAREST);
+			// Linear so the per-chunk coverage gets a sub-chunk ramp the
+			// fragment shader can dither across for a soft boundary.
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_LINEAR);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_LINEAR);
 			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_S, GL33C.GL_CLAMP_TO_EDGE);
 			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_T, GL33C.GL_CLAMP_TO_EDGE);
 		}

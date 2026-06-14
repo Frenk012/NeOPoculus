@@ -25,7 +25,10 @@ public final class LodWorld {
 		boolean changed = previous == null
 			|| !java.util.Arrays.equals(previous.height, chunk.height)
 			|| !java.util.Arrays.equals(previous.waterHeight, chunk.waterHeight)
-			|| !java.util.Arrays.equals(previous.color, chunk.color);
+			|| !java.util.Arrays.equals(previous.color, chunk.color)
+			|| !java.util.Arrays.equals(previous.featureTop, chunk.featureTop)
+			|| !java.util.Arrays.equals(previous.featureBottom, chunk.featureBottom)
+			|| !java.util.Arrays.equals(previous.featureColor, chunk.featureColor);
 		if (changed) {
 			// Mark dirty before publishing so concurrent eviction can never
 			// drop an unsaved chunk.

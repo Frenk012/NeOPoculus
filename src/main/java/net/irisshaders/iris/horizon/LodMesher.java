@@ -5,19 +5,19 @@ import org.lwjgl.system.MemoryUtil;
 import java.nio.ByteBuffer;
 
 /**
- * Builds a column-style LOD mesh for one render region (8x8 chunks, 128x128
- * blocks) at a given cell scale. Each cell becomes a flat top quad plus
- * skirt quads down to lower neighbors, which is the cheapest watertight
- * representation of distant terrain. Runs entirely on a worker thread and
- * allocates the vertex data off-heap for a zero-copy GPU upload.
+ * Builds a LOD mesh for one render region (8x8 chunks, 128x128 blocks) at a
+ * given cell scale. The ground is a heightmap (top quad + skirts per cell);
+ * above-ground features (tree foliage) are meshed as voxel boxes from a
+ * per-column [featureBottom, featureTop) span, giving trees a real 3D crown
+ * shape. Runs on a worker thread; vertex data is off-heap for zero-copy upload.
  */
 public final class LodMesher {
 	public static final int REGION_BLOCKS = 128;
 	public static final int REGION_CHUNK_BITS = 3; // 8 chunks
 	private static final int UNKNOWN = Integer.MIN_VALUE;
 	private static final int WATER_COLOR = 0x3F76E4;
-	/** Bit 24 of the packed sampleCell low word flags a vegetation (tree) cell. */
-	private static final int VEG_BIT = 1 << 24;
+	/** Features (trees) are only meshed at cell scales this fine; far LOD is terrain only. */
+	private static final int FEATURE_MAX_SCALE = 2;
 	/**
 	 * Bytes per vertex: 3 shorts position (region-local x/z and absolute y
 	 * all fit in 16 bits), 2 bytes pad for alignment, 4 bytes RGBA.
@@ -35,23 +35,26 @@ public final class LodMesher {
 	}
 
 	/**
-	 * Per-thread scratch: the worst-case vertex buffer and sampling grids
-	 * are reused across builds, and the queued result is copied into an
-	 * exactly-sized buffer. Without this, a burst of in-flight scale-1
-	 * builds could pin hundreds of MB of native memory in the upload queue.
+	 * Per-thread scratch reused across builds; the queued result is copied
+	 * into an exactly-sized buffer.
 	 */
 	private static final class Scratch {
 		final ByteBuffer vertexScratch;
 		final int[] heights;
 		final int[] colors;
-		final boolean[] veg;
+		final int[] featTop;
+		final int[] featBottom;
+		final int[] featColor;
 
 		Scratch() {
 			int maxCells = (REGION_BLOCKS + 2) * (REGION_BLOCKS + 2);
-			vertexScratch = MemoryUtil.memAlloc(REGION_BLOCKS * REGION_BLOCKS * 5 * 6 * STRIDE);
+			// Up to 5 ground quads + 6 feature quads per cell, worst case.
+			vertexScratch = MemoryUtil.memAlloc(REGION_BLOCKS * REGION_BLOCKS * 11 * 6 * STRIDE);
 			heights = new int[maxCells];
 			colors = new int[maxCells];
-			veg = new boolean[maxCells];
+			featTop = new int[maxCells];
+			featBottom = new int[maxCells];
+			featColor = new int[maxCells];
 		}
 	}
 
@@ -68,30 +71,39 @@ public final class LodMesher {
 	public static MeshData build(LodWorld world, int regionX, int regionZ, int scale, int worldMinY) {
 		int n = REGION_BLOCKS / scale;
 
-		// Sample an (n+2)^2 grid including a one-cell border from
-		// neighboring regions so skirts at region edges line up. The grids
-		// are pooled per thread; every used slot is written below before
-		// being read, so stale data from previous builds is harmless.
 		Scratch scratch = SCRATCH.get();
 		int[] heights = scratch.heights;
 		int[] colors = scratch.colors;
-		boolean[] veg = scratch.veg;
+		int[] featTop = scratch.featTop;
+		int[] featBottom = scratch.featBottom;
+		int[] featColor = scratch.featColor;
+		boolean meshFeatures = scale <= FEATURE_MAX_SCALE;
 
 		boolean any = false;
 		for (int cz = -1; cz <= n; cz++) {
 			for (int cx = -1; cx <= n; cx++) {
 				int gi = (cx + 1) + (cz + 1) * (n + 2);
-				long sample = sampleCell(world, regionX * REGION_BLOCKS + cx * scale, regionZ * REGION_BLOCKS + cz * scale, scale, worldMinY);
+				int bx = regionX * REGION_BLOCKS + cx * scale;
+				int bz = regionZ * REGION_BLOCKS + cz * scale;
+				long sample = sampleCell(world, bx, bz, scale, worldMinY);
 				if (sample == Long.MIN_VALUE) {
 					heights[gi] = UNKNOWN;
-					veg[gi] = false;
 				} else {
-					int low = (int) sample;
 					heights[gi] = (int) (sample >> 32);
-					colors[gi] = low & 0xFFFFFF;
-					veg[gi] = (low & VEG_BIT) != 0;
+					colors[gi] = (int) sample & 0xFFFFFF;
 					if (cx >= 0 && cx < n && cz >= 0 && cz < n) {
 						any = true;
+					}
+				}
+
+				if (meshFeatures) {
+					long f = sampleFeature(world, bx, bz, scale);
+					if (f == Long.MIN_VALUE) {
+						featTop[gi] = (int) LodChunk.NO_FEATURE;
+					} else {
+						featTop[gi] = (short) (f >> 48);
+						featBottom[gi] = (short) (f >> 32);
+						featColor[gi] = (int) (f & 0xFFFFFF);
 					}
 				}
 			}
@@ -101,8 +113,6 @@ public final class LodMesher {
 			return null;
 		}
 
-		// Build into the reusable worst-case scratch buffer; the result is
-		// copied into an exactly-sized allocation before being queued.
 		ByteBuffer buf = scratch.vertexScratch;
 		buf.clear();
 
@@ -120,9 +130,6 @@ public final class LodMesher {
 				}
 				int topColor = shade(colors[gi], slopeShade(heights, gi, n, scale));
 
-				// Greedy run: merge consecutive cells along X that share the
-				// same height and lit color into one top quad. Plains, water
-				// and snowfields collapse into a handful of quads.
 				int runEnd = cx + 1;
 				while (runEnd < n) {
 					int gj = (runEnd + 1) + (cz + 1) * (n + 2);
@@ -134,29 +141,61 @@ public final class LodMesher {
 
 				int x0 = cx * scale;
 				int x1 = runEnd * scale;
-				verts += quad(buf,
-					x0, h, z0,
-					x1, h, z0,
-					x1, h, z1,
-					x0, h, z1,
-					topColor);
+				verts += quad(buf, x0, h, z0, x1, h, z0, x1, h, z1, x0, h, z1, topColor);
 
-				// X skirts only at the run boundaries; inside the run all
-				// heights are equal so no faces are possible there.
 				int giLast = runEnd + (cz + 1) * (n + 2);
-				verts += skirt(buf, heights[gi - 1], h, x0, z0, x0, z1, colors[gi], 0.6f, worldMinY, veg[gi]);
-				verts += skirt(buf, heights[giLast + 1], h, x1, z1, x1, z0, colors[giLast], 0.6f, worldMinY, veg[giLast]);
+				verts += skirt(buf, heights[gi - 1], h, x0, z0, x0, z1, colors[gi], 0.6f, worldMinY);
+				verts += skirt(buf, heights[giLast + 1], h, x1, z1, x1, z0, colors[giLast], 0.6f, worldMinY);
 
-				// Z skirts per cell: they only emit where the row neighbor
-				// is lower, so flat areas stay free.
 				for (int k = cx; k < runEnd; k++) {
 					int gk = (k + 1) + (cz + 1) * (n + 2);
 					int ox = k * scale;
-					verts += skirt(buf, heights[gk - (n + 2)], h, ox + scale, z0, ox, z0, colors[gk], 0.8f, worldMinY, veg[gk]);
-					verts += skirt(buf, heights[gk + (n + 2)], h, ox, z1, ox + scale, z1, colors[gk], 0.8f, worldMinY, veg[gk]);
+					verts += skirt(buf, heights[gk - (n + 2)], h, ox + scale, z0, ox, z0, colors[gk], 0.8f, worldMinY);
+					verts += skirt(buf, heights[gk + (n + 2)], h, ox, z1, ox + scale, z1, colors[gk], 0.8f, worldMinY);
 				}
 
 				cx = runEnd;
+			}
+		}
+
+		// Feature (tree) voxel boxes.
+		if (meshFeatures) {
+			for (int cz = 0; cz < n; cz++) {
+				int z0 = cz * scale;
+				int z1 = z0 + scale;
+				for (int cx = 0; cx < n; cx++) {
+					int gi = (cx + 1) + (cz + 1) * (n + 2);
+					int ft = featTop[gi];
+					if (ft == (int) LodChunk.NO_FEATURE) {
+						continue;
+					}
+					int fb = featBottom[gi];
+					if (fb >= ft) {
+						continue;
+					}
+					int color = featColor[gi];
+					int x0 = cx * scale;
+					int x1 = x0 + scale;
+
+					// Top (lit) and bottom (the crown's underside overhang).
+					verts += quad(buf, x0, ft, z0, x1, ft, z0, x1, ft, z1, x0, ft, z1, shade(color, 1.0f));
+					verts += quad(buf, x0, fb, z0, x1, fb, z0, x1, fb, z1, x0, fb, z1, shade(color, 0.55f));
+
+					// Sides only toward neighbors without a feature (silhouette);
+					// shared faces with adjacent foliage are skipped.
+					if (featTop[gi - 1] == (int) LodChunk.NO_FEATURE) {
+						verts += quad(buf, x0, ft, z0, x0, ft, z1, x0, fb, z1, x0, fb, z0, shade(color, 0.7f));
+					}
+					if (featTop[gi + 1] == (int) LodChunk.NO_FEATURE) {
+						verts += quad(buf, x1, ft, z1, x1, ft, z0, x1, fb, z0, x1, fb, z1, shade(color, 0.7f));
+					}
+					if (featTop[gi - (n + 2)] == (int) LodChunk.NO_FEATURE) {
+						verts += quad(buf, x1, ft, z0, x0, ft, z0, x0, fb, z0, x1, fb, z0, shade(color, 0.8f));
+					}
+					if (featTop[gi + (n + 2)] == (int) LodChunk.NO_FEATURE) {
+						verts += quad(buf, x0, ft, z1, x1, ft, z1, x1, fb, z1, x0, fb, z1, shade(color, 0.8f));
+					}
+				}
 			}
 		}
 
@@ -164,34 +203,27 @@ public final class LodMesher {
 			return null;
 		}
 
-		// Copy from the START of the scratch buffer. memAddress() returns the
-		// address at the buffer's CURRENT position, which here is the end of
-		// the written data — using it copied uninitialized memory (and stale
-		// vertices left by the previous region built on this reused per-thread
-		// scratch), scattering garbage geometry. memAddress0() ignores position.
+		// Copy from the START of the scratch buffer (memAddress0 ignores the
+		// buffer position, which is at the end of the written data).
 		ByteBuffer exact = MemoryUtil.memAlloc(verts * STRIDE);
 		MemoryUtil.memCopy(MemoryUtil.memAddress0(buf), MemoryUtil.memAddress0(exact), (long) verts * STRIDE);
 		return new MeshData(regionX, regionZ, scale, exact, verts);
 	}
 
 	/**
-	 * Samples one cell: max surface height (water surface wins) and average
-	 * color, water-tinted by depth. Returns Long.MIN_VALUE when no column in
-	 * the cell has data, otherwise packs (height << 32 | rgb).
+	 * Samples one ground cell: max surface height (water wins) and average
+	 * color. Returns Long.MIN_VALUE when no column has data, else packs
+	 * (height << 32 | rgb).
 	 */
 	private static long sampleCell(LodWorld world, int blockX, int blockZ, int scale, int worldMinY) {
 		int maxH = UNKNOWN;
 		long r = 0, g = 0, b = 0;
 		int samples = 0;
 		int waterColumns = 0;
-		int vegColumns = 0;
 		long waterDepth = 0;
 
 		LodChunk cached = null;
 		int cachedCx = Integer.MIN_VALUE, cachedCz = Integer.MIN_VALUE;
-
-		// For large cells, sampling every column is wasteful; step so we
-		// take at most 8x8 samples per cell.
 		int step = Math.max(1, scale / 8);
 
 		for (int dz = 0; dz < scale; dz += step) {
@@ -223,9 +255,6 @@ public final class LodMesher {
 				if (h > maxH) {
 					maxH = h;
 				}
-				if (cached.vegetation[index]) {
-					vegColumns++;
-				}
 				r += (color >> 16) & 0xFF;
 				g += (color >> 8) & 0xFF;
 				b += color & 0xFF;
@@ -242,7 +271,6 @@ public final class LodMesher {
 		int bb = (int) (b / samples);
 
 		if (waterColumns * 2 >= samples) {
-			// Mostly water: blend floor color toward water color by depth.
 			float depth = waterDepth / (float) waterColumns;
 			float t = Math.min(0.95f, 0.55f + depth * 0.02f);
 			rr = (int) (rr * (1 - t) + ((WATER_COLOR >> 16) & 0xFF) * t);
@@ -250,20 +278,63 @@ public final class LodMesher {
 			bb = (int) (bb * (1 - t) + (WATER_COLOR & 0xFF) * t);
 		}
 
-		int vegFlag = (vegColumns * 2 >= samples) ? VEG_BIT : 0;
-		return ((long) maxH << 32) | ((long) (vegFlag | (rr << 16) | (gg << 8) | bb) & 0xFFFFFFFFL);
+		return ((long) maxH << 32) | ((long) ((rr << 16) | (gg << 8) | bb) & 0xFFFFFFFFL);
 	}
 
-	/** Max blocks a tree-crown skirt drops, so the canopy floats instead of forming a pillar. */
-	private static final int VEG_SKIRT_CAP = 5;
+	/**
+	 * Samples the above-ground feature (tree) span of a cell: featureTop is
+	 * the highest foliage, featureBottom the lowest across the cell's columns.
+	 * Returns Long.MIN_VALUE when the cell has no feature, else packs
+	 * (featTop << 48 | featBottom << 32 | rgb).
+	 */
+	private static long sampleFeature(LodWorld world, int blockX, int blockZ, int scale) {
+		int maxTop = Integer.MIN_VALUE;
+		int minBottom = Integer.MAX_VALUE;
+		long r = 0, g = 0, b = 0;
+		int samples = 0;
 
-	private static int skirt(ByteBuffer buf, int neighborH, int h, int x1, int z1, int x2, int z2, int baseColor, float shade, int worldMinY, boolean veg) {
-		int bottom = neighborH == UNKNOWN ? Math.max(worldMinY, h - 32) : neighborH;
-		if (veg) {
-			// Float the crown: only skirt a few blocks down instead of all the
-			// way to the ground neighbor, which would form a solid green pillar.
-			bottom = Math.max(bottom, h - VEG_SKIRT_CAP);
+		LodChunk cached = null;
+		int cachedCx = Integer.MIN_VALUE, cachedCz = Integer.MIN_VALUE;
+		int step = Math.max(1, scale / 8);
+
+		for (int dz = 0; dz < scale; dz += step) {
+			for (int dx = 0; dx < scale; dx += step) {
+				int wx = blockX + dx;
+				int wz = blockZ + dz;
+				int cx = wx >> 4, cz = wz >> 4;
+				if (cx != cachedCx || cz != cachedCz) {
+					cached = world.get(cx, cz);
+					cachedCx = cx;
+					cachedCz = cz;
+				}
+				if (cached == null) {
+					continue;
+				}
+				int index = (wx & 15) + (wz & 15) * 16;
+				int top = cached.featureTop[index];
+				if (top == LodChunk.NO_FEATURE) {
+					continue;
+				}
+				int bottom = cached.featureBottom[index];
+				int color = cached.featureColor[index];
+				if (top > maxTop) maxTop = top;
+				if (bottom < minBottom) minBottom = bottom;
+				r += (color >> 16) & 0xFF;
+				g += (color >> 8) & 0xFF;
+				b += color & 0xFF;
+				samples++;
+			}
 		}
+
+		if (samples == 0) {
+			return Long.MIN_VALUE;
+		}
+		int rgb = ((int) (r / samples) << 16) | ((int) (g / samples) << 8) | (int) (b / samples);
+		return ((long) (maxTop & 0xFFFF) << 48) | ((long) (minBottom & 0xFFFF) << 32) | (rgb & 0xFFFFFFL);
+	}
+
+	private static int skirt(ByteBuffer buf, int neighborH, int h, int x1, int z1, int x2, int z2, int baseColor, float shade, int worldMinY) {
+		int bottom = neighborH == UNKNOWN ? Math.max(worldMinY, h - 32) : neighborH;
 		if (bottom >= h) {
 			return 0;
 		}
@@ -278,7 +349,6 @@ public final class LodMesher {
 	/**
 	 * Directional shading from the terrain gradient (light from the
 	 * north-west): slopes facing the light brighten, slopes away darken.
-	 * This is what makes hills read as hills instead of color noise.
 	 */
 	private static float slopeShade(int[] heights, int gi, int n, int scale) {
 		int h = heights[gi];

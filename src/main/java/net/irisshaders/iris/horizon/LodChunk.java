@@ -15,10 +15,20 @@ public final class LodChunk {
 	public final short[] height = new short[256];
 	/** Y of the water surface per column, or NO_WATER. */
 	public final short[] waterHeight = new short[256];
-	/** Opaque 0xRRGGBB color per column. */
+	/** Opaque 0xRRGGBB color per column (ground surface). */
 	public final int[] color = new int[256];
-	/** True where the surface is tree foliage/log (rendered as a floating crown). */
-	public final boolean[] vegetation = new boolean[256];
+
+	public static final short NO_FEATURE = Short.MIN_VALUE;
+	/**
+	 * Above-ground feature (tree foliage/logs) as a per-column voxel span:
+	 * the foliage occupies [featureBottom, featureTop). Columns on a crown's
+	 * edge have a high featureBottom (floating overhang), trunk columns reach
+	 * the ground — together they mesh into a real 3D tree shape. NO_FEATURE
+	 * when the column has nothing above the terrain surface.
+	 */
+	public final short[] featureTop = new short[256];
+	public final short[] featureBottom = new short[256];
+	public final int[] featureColor = new int[256];
 
 	public LodChunk(int chunkX, int chunkZ) {
 		this.chunkX = chunkX;

@@ -76,6 +76,7 @@ public final class HorizonLod {
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ChunkEvent.Unload.class, INSTANCE::onChunkUnload);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, LevelEvent.Unload.class, INSTANCE::onLevelUnload);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ClientTickEvent.Post.class, INSTANCE::onClientTick);
+		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, net.neoforged.neoforge.client.event.ViewportEvent.RenderFog.class, INSTANCE::onRenderFog);
 		Iris.logger.info("Horizon extended LOD system initialized");
 	}
 
@@ -103,6 +104,29 @@ public final class HorizonLod {
 			return vanillaFarPlane;
 		}
 		return Math.max(vanillaFarPlane, HorizonConfig.get().getLodDistanceBlocks() * 1.6f);
+	}
+
+	/**
+	 * Pushes the vanilla terrain distance-fog out to the LOD distance so the
+	 * last ring of real chunks no longer fades to sky color before the LOD
+	 * begins — that fade was the pale halo at the loaded-chunk edge. Sky fog
+	 * (horizon haze) is left untouched, and shader packs handle their own fog.
+	 */
+	private void onRenderFog(net.neoforged.neoforge.client.event.ViewportEvent.RenderFog event) {
+		if (!isActive() || Iris.getCurrentPack().isPresent()) {
+			return;
+		}
+		if (event.getMode() != net.minecraft.client.renderer.FogRenderer.FogMode.FOG_TERRAIN) {
+			return;
+		}
+		ClientLevel level = Minecraft.getInstance().level;
+		if (level == null || !level.dimensionType().hasSkyLight()) {
+			return;
+		}
+		float far = Math.max(event.getFarPlaneDistance(), HorizonConfig.get().getLodDistanceBlocks());
+		event.setFarPlaneDistance(far);
+		event.setNearPlaneDistance(far * 0.95f);
+		event.setCanceled(true);
 	}
 
 	private void onChunkLoad(ChunkEvent.Load event) {

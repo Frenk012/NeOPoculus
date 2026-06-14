@@ -51,11 +51,13 @@ public final class LodColors {
 		int gx = (pos.getX() & 15) >> 1;
 		int gz = (pos.getZ() & 15) >> 1;
 		int base = entry.grid[gx + gz * GRID];
-		if (entry.tintIndex < 0) {
-			return base;
-		}
 		try {
-			int tint = Minecraft.getInstance().getBlockColors().getColor(state, level, pos, entry.tintIndex);
+			// Try the tint index detected from the model, falling back to 0:
+			// some baked grass/foliage quads don't carry the tinted flag, so
+			// relying only on the detected index left grass an untinted grey.
+			// getColor returns -1 when the block has no color provider.
+			int idx = entry.tintIndex >= 0 ? entry.tintIndex : 0;
+			int tint = Minecraft.getInstance().getBlockColors().getColor(state, level, pos, idx);
 			if (tint == -1) {
 				return base;
 			}

@@ -54,7 +54,11 @@ public final class LodCapture {
 					}
 					lod.height[index] = (short) (y + 1);
 					lod.waterHeight[index] = water;
-					lod.color[index] = LodColors.colorOf(state, level, pos.set(baseX + x, y, baseZ + z));
+					// Biome-tinted water color (swamp/cold/ocean differ) instead
+					// of a fixed blue, blended slightly toward the floor color.
+					int waterColor = level.getBiome(pos.set(baseX + x, top, baseZ + z)).value().getWaterColor();
+					int floorColor = LodColors.colorOf(state, level, pos.set(baseX + x, y, baseZ + z));
+					lod.color[index] = blend(waterColor, floorColor, 0.2f);
 				} else if (state.is(BlockTags.LEAVES) || state.is(BlockTags.LOGS)) {
 					// Tree column: separate the ground (heightmap) from the
 					// above-ground foliage (voxel span).
@@ -99,5 +103,15 @@ public final class LodCapture {
 		}
 
 		return lod;
+	}
+
+	/** Blends b into a by t (0..1), per RGB channel. */
+	private static int blend(int a, int b, float t) {
+		int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+		int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+		int r = (int) (ar * (1 - t) + br * t);
+		int g = (int) (ag * (1 - t) + bg * t);
+		int bl = (int) (ab * (1 - t) + bb * t);
+		return (r << 16) | (g << 8) | bl;
 	}
 }

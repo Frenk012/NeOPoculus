@@ -270,12 +270,14 @@ public final class LodMesher {
 		int gg = (int) (g / samples);
 		int bb = (int) (b / samples);
 
+		// Water columns carry their biome-tinted color from capture; darken a
+		// little with depth for a sense of volume, no fixed-blue override.
 		if (waterColumns * 2 >= samples) {
 			float depth = waterDepth / (float) waterColumns;
-			float t = Math.min(0.95f, 0.55f + depth * 0.02f);
-			rr = (int) (rr * (1 - t) + ((WATER_COLOR >> 16) & 0xFF) * t);
-			gg = (int) (gg * (1 - t) + ((WATER_COLOR >> 8) & 0xFF) * t);
-			bb = (int) (bb * (1 - t) + (WATER_COLOR & 0xFF) * t);
+			float t = Math.max(0.5f, 1.0f - depth * 0.03f);
+			rr = (int) (rr * t);
+			gg = (int) (gg * t);
+			bb = (int) (bb * t);
 		}
 
 		return ((long) maxH << 32) | ((long) ((rr << 16) | (gg << 8) | bb) & 0xFFFFFFFFL);

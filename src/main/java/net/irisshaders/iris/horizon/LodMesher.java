@@ -16,6 +16,8 @@ public final class LodMesher {
 	public static final int REGION_CHUNK_BITS = 3; // 8 chunks
 	private static final int UNKNOWN = Integer.MIN_VALUE;
 	private static final int WATER_COLOR = 0x3F76E4;
+	/** Bit 24 of the packed sampleCell low word flags a vegetation (tree) cell. */
+	private static final int VEG_BIT = 1 << 24;
 	/**
 	 * Bytes per vertex: 3 shorts position (region-local x/z and absolute y
 	 * all fit in 16 bits), 2 bytes pad for alignment, 4 bytes RGBA.
@@ -42,12 +44,14 @@ public final class LodMesher {
 		final ByteBuffer vertexScratch;
 		final int[] heights;
 		final int[] colors;
+		final boolean[] veg;
 
 		Scratch() {
 			int maxCells = (REGION_BLOCKS + 2) * (REGION_BLOCKS + 2);
 			vertexScratch = MemoryUtil.memAlloc(REGION_BLOCKS * REGION_BLOCKS * 5 * 6 * STRIDE);
 			heights = new int[maxCells];
 			colors = new int[maxCells];
+			veg = new boolean[maxCells];
 		}
 	}
 
@@ -71,6 +75,7 @@ public final class LodMesher {
 		Scratch scratch = SCRATCH.get();
 		int[] heights = scratch.heights;
 		int[] colors = scratch.colors;
+		boolean[] veg = scratch.veg;
 
 		boolean any = false;
 		for (int cz = -1; cz <= n; cz++) {
@@ -79,9 +84,12 @@ public final class LodMesher {
 				long sample = sampleCell(world, regionX * REGION_BLOCKS + cx * scale, regionZ * REGION_BLOCKS + cz * scale, scale, worldMinY);
 				if (sample == Long.MIN_VALUE) {
 					heights[gi] = UNKNOWN;
+					veg[gi] = false;
 				} else {
+					int low = (int) sample;
 					heights[gi] = (int) (sample >> 32);
-					colors[gi] = (int) sample;
+					colors[gi] = low & 0xFFFFFF;
+					veg[gi] = (low & VEG_BIT) != 0;
 					if (cx >= 0 && cx < n && cz >= 0 && cz < n) {
 						any = true;
 					}
@@ -136,16 +144,16 @@ public final class LodMesher {
 				// X skirts only at the run boundaries; inside the run all
 				// heights are equal so no faces are possible there.
 				int giLast = runEnd + (cz + 1) * (n + 2);
-				verts += skirt(buf, heights[gi - 1], h, x0, z0, x0, z1, colors[gi], 0.6f, worldMinY);
-				verts += skirt(buf, heights[giLast + 1], h, x1, z1, x1, z0, colors[giLast], 0.6f, worldMinY);
+				verts += skirt(buf, heights[gi - 1], h, x0, z0, x0, z1, colors[gi], 0.6f, worldMinY, veg[gi]);
+				verts += skirt(buf, heights[giLast + 1], h, x1, z1, x1, z0, colors[giLast], 0.6f, worldMinY, veg[giLast]);
 
 				// Z skirts per cell: they only emit where the row neighbor
 				// is lower, so flat areas stay free.
 				for (int k = cx; k < runEnd; k++) {
 					int gk = (k + 1) + (cz + 1) * (n + 2);
 					int ox = k * scale;
-					verts += skirt(buf, heights[gk - (n + 2)], h, ox + scale, z0, ox, z0, colors[gk], 0.8f, worldMinY);
-					verts += skirt(buf, heights[gk + (n + 2)], h, ox, z1, ox + scale, z1, colors[gk], 0.8f, worldMinY);
+					verts += skirt(buf, heights[gk - (n + 2)], h, ox + scale, z0, ox, z0, colors[gk], 0.8f, worldMinY, veg[gk]);
+					verts += skirt(buf, heights[gk + (n + 2)], h, ox, z1, ox + scale, z1, colors[gk], 0.8f, worldMinY, veg[gk]);
 				}
 
 				cx = runEnd;
@@ -176,6 +184,7 @@ public final class LodMesher {
 		long r = 0, g = 0, b = 0;
 		int samples = 0;
 		int waterColumns = 0;
+		int vegColumns = 0;
 		long waterDepth = 0;
 
 		LodChunk cached = null;
@@ -214,6 +223,9 @@ public final class LodMesher {
 				if (h > maxH) {
 					maxH = h;
 				}
+				if (cached.vegetation[index]) {
+					vegColumns++;
+				}
 				r += (color >> 16) & 0xFF;
 				g += (color >> 8) & 0xFF;
 				b += color & 0xFF;
@@ -238,11 +250,20 @@ public final class LodMesher {
 			bb = (int) (bb * (1 - t) + (WATER_COLOR & 0xFF) * t);
 		}
 
-		return ((long) maxH << 32) | ((rr << 16) | (gg << 8) | bb);
+		int vegFlag = (vegColumns * 2 >= samples) ? VEG_BIT : 0;
+		return ((long) maxH << 32) | ((long) (vegFlag | (rr << 16) | (gg << 8) | bb) & 0xFFFFFFFFL);
 	}
 
-	private static int skirt(ByteBuffer buf, int neighborH, int h, int x1, int z1, int x2, int z2, int baseColor, float shade, int worldMinY) {
+	/** Max blocks a tree-crown skirt drops, so the canopy floats instead of forming a pillar. */
+	private static final int VEG_SKIRT_CAP = 5;
+
+	private static int skirt(ByteBuffer buf, int neighborH, int h, int x1, int z1, int x2, int z2, int baseColor, float shade, int worldMinY, boolean veg) {
 		int bottom = neighborH == UNKNOWN ? Math.max(worldMinY, h - 32) : neighborH;
+		if (veg) {
+			// Float the crown: only skirt a few blocks down instead of all the
+			// way to the ground neighbor, which would form a solid green pillar.
+			bottom = Math.max(bottom, h - VEG_SKIRT_CAP);
+		}
 		if (bottom >= h) {
 			return 0;
 		}

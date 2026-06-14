@@ -59,24 +59,14 @@ public final class LodCapture {
 					lod.waterHeight[index] = water;
 					lod.color[index] = LodColors.colorOf(state, level, pos.set(baseX + x, y, baseZ + z));
 				} else if (state.is(BlockTags.LEAVES) || state.is(BlockTags.LOGS)) {
-					// Tree column: the canopy top would otherwise be extruded
-					// down to the ground as a tall green pillar. Find the ground
-					// under the foliage and cap the column to a low mound, so it
-					// keeps a foliage-colored tree-ish shape without the pillar.
-					int canopyColor = LodColors.colorOf(state, level, pos.set(baseX + x, y, baseZ + z));
-					int ground = y;
-					int floor = Math.max(minY, y - 32);
-					while (ground > floor) {
-						BlockState below = chunk.getBlockState(pos.set(baseX + x, ground - 1, baseZ + z));
-						if (!below.is(BlockTags.LEAVES) && !below.is(BlockTags.LOGS) && !below.isAir()) {
-							break;
-						}
-						ground--;
-					}
-					int capped = ground + Math.min(y - ground, 4);
-					lod.height[index] = (short) (capped + 1);
+					// Tree foliage: keep the canopy height but flag it as
+					// vegetation. The mesher caps the skirt for vegetation cells
+					// so the crown reads as a floating green blob instead of a
+					// solid pillar extruded down to the ground.
+					lod.height[index] = (short) (y + 1);
 					lod.waterHeight[index] = LodChunk.NO_WATER;
-					lod.color[index] = canopyColor;
+					lod.color[index] = LodColors.colorOf(state, level, pos.set(baseX + x, y, baseZ + z));
+					lod.vegetation[index] = true;
 				} else {
 					lod.height[index] = (short) (y + 1);
 					lod.waterHeight[index] = LodChunk.NO_WATER;

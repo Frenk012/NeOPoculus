@@ -17,6 +17,8 @@ public final class LodChunk {
 	public final short[] waterHeight = new short[256];
 	/** Opaque 0xRRGGBB color per column. */
 	public final int[] color = new int[256];
+	/** True where the surface is tree foliage/log (rendered as a floating crown). */
+	public final boolean[] vegetation = new boolean[256];
 
 	public LodChunk(int chunkX, int chunkZ) {
 		this.chunkX = chunkX;

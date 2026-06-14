@@ -22,7 +22,7 @@ import java.util.zip.GZIPOutputStream;
  */
 public final class LodStorage {
 	private static final int MAGIC = 0x484C4F44; // "HLOD"
-	private static final int VERSION = 1;
+	private static final int VERSION = 2;
 
 	private final Path dimensionDir;
 	private final Set<Long> loadedRegions = ConcurrentHashMap.newKeySet();
@@ -85,6 +85,7 @@ public final class LodStorage {
 				for (int j = 0; j < 256; j++) chunk.height[j] = in.readShort();
 				for (int j = 0; j < 256; j++) chunk.waterHeight[j] = in.readShort();
 				for (int j = 0; j < 256; j++) chunk.color[j] = in.readInt();
+				for (int j = 0; j < 256; j++) chunk.vegetation[j] = in.readBoolean();
 				world.putFromDisk(chunk);
 			}
 		} catch (IOException e) {
@@ -124,6 +125,7 @@ public final class LodStorage {
 				for (int j = 0; j < 256; j++) out.writeShort(chunk.height[j]);
 				for (int j = 0; j < 256; j++) out.writeShort(chunk.waterHeight[j]);
 				for (int j = 0; j < 256; j++) out.writeInt(chunk.color[j]);
+				for (int j = 0; j < 256; j++) out.writeBoolean(chunk.vegetation[j]);
 			}
 		} catch (IOException e) {
 			Iris.logger.error("Horizon: failed to write LOD region " + tmp, e);

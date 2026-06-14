@@ -71,6 +71,12 @@ public final class LodColors {
 	private static Entry computeEntry(BlockState state) {
 		try {
 			BakedModel model = Minecraft.getInstance().getBlockRenderer().getBlockModel(state);
+			// Unresolved model (e.g. some Dynamic Trees / modded states) renders
+			// the magenta-black missing texture; fall back to the map color so
+			// the LOD doesn't show a big missing-texture block.
+			if (model == Minecraft.getInstance().getModelManager().getMissingModel()) {
+				return uniform(mapColorOf(state), -1);
+			}
 			List<BakedQuad> quads = model.getQuads(state, Direction.UP, RANDOM);
 			BakedQuad quad = quads.isEmpty() ? null : quads.get(0);
 			var sprite = quad != null ? quad.getSprite() : model.getParticleIcon();

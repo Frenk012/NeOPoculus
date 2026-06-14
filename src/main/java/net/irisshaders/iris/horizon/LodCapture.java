@@ -70,7 +70,13 @@ public final class LodCapture {
 					int g = y;
 					while (g > groundFloor) {
 						BlockState below = chunk.getBlockState(pos.set(baseX + x, g - 1, baseZ + z));
-						if (!below.is(BlockTags.LEAVES) && !below.is(BlockTags.LOGS) && !below.isAir()) {
+						// Stop only at a real full-cube ground block. Leaves,
+						// logs and thin tree parts (e.g. Dynamic Trees branches,
+						// which aren't in the LOGS tag) are skipped so the walk
+						// reaches the actual ground and the trunk stays part of
+						// the feature span above it.
+						if (!below.is(BlockTags.LEAVES) && !below.is(BlockTags.LOGS) && !below.isAir()
+							&& below.isCollisionShapeFullBlock(chunk, pos)) {
 							break;
 						}
 						g--;

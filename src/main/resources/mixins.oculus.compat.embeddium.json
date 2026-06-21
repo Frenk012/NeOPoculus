@@ -17,6 +17,7 @@
     "shadow_map.frustum.MixinCullEverythingFrustum"
   ],
   "mixins": [
+    "littletiles.MixinBlockRendererSpike",
     "monocle.mixin.EmbeddiumWorldRendererAssessor",
     "monocle.mixin.MixinChunkBuildBuffers",
     "monocle.mixin.MixinChunkMeshBufferBuilder",

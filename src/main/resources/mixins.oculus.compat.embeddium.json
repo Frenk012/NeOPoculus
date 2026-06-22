@@ -18,6 +18,7 @@
   ],
   "mixins": [
     "littletiles.MixinBlockRendererSpike",
+    "littletiles.MixinBERenderManagerInvalidate",
     "monocle.mixin.EmbeddiumWorldRendererAssessor",
     "monocle.mixin.MixinChunkBuildBuffers",
     "monocle.mixin.MixinChunkMeshBufferBuilder",

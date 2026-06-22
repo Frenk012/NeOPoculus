@@ -16,10 +16,12 @@ import java.util.Set;
 public class IrisSodiumCompatMixinPlugin implements IMixinConfigPlugin {
 
 	public static boolean isBendyLibLoaded;
+	public static boolean isLittleTilesLoaded;
 
 	@Override
 	public void onLoad(String mixinPackage) {
 		isBendyLibLoaded = LoadingModList.get().getModFileById("bendylib") != null;
+		isLittleTilesLoaded = LoadingModList.get().getModFileById("littletiles") != null;
 	}
 
 	@Override
@@ -31,6 +33,9 @@ public class IrisSodiumCompatMixinPlugin implements IMixinConfigPlugin {
 	public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
 		if (mixinClassName.endsWith(".copyEntity.ModelPartMixin") || mixinClassName.endsWith(".copyEntity.CuboidMixin")) {
 			return !isBendyLibLoaded;
+		}
+		if (mixinClassName.endsWith(".littletiles.MixinBERenderManagerInvalidate")) {
+			return isLittleTilesLoaded;
 		}
 		return true;
 	}

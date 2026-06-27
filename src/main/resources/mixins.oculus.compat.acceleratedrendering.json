@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "plugin": "net.irisshaders.iris.compat.acceleratedrendering.mixin.OculusARCompatMixinPlugin",
+  "package": "net.irisshaders.iris.compat.acceleratedrendering.mixin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "CoreFeatureMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

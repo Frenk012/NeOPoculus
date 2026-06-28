@@ -125,10 +125,39 @@ public final class LittleTilesEmbeddiumBridge {
 		return OK && BLOCK_TILE.isInstance(state.getBlock());
 	}
 
+	/**
+	 * Per-build bake cache. The meshing task now runs every chunk render layer for a LittleTiles block
+	 * (see MixinMeshingTaskRenderTypes), so collectQuads is hit ~5x per block with only ctx.renderLayer()
+	 * differing. Those calls are consecutive on one meshing thread, so caching the most-recent pos's full
+	 * per-layer bake collapses 5 rebakes into 1. It is self-invalidating: any other position meshed in
+	 * between (always the case across separate builds) replaces the entry, so stale tile data is never served.
+	 */
+	private static final class BakeCache {
+		final long pos;
+		final Map<RenderType, List<BakedQuad>> perLayer; // null => block had no tile quads
+		BakeCache(long pos, Map<RenderType, List<BakedQuad>> perLayer) {
+			this.pos = pos;
+			this.perLayer = perLayer;
+		}
+	}
+
+	private static final ThreadLocal<BakeCache> CACHE = new ThreadLocal<>();
+
 	/** Collect the tile BakedQuads for the given block + render layer, or null if none/unavailable. */
-	@SuppressWarnings("unchecked")
 	public static List<BakedQuad> collectQuads(BlockRenderContext ctx) {
 		if (!OK) return null;
+		long key = ctx.pos().asLong();
+		BakeCache cached = CACHE.get();
+		if (cached == null || cached.pos != key) {
+			cached = new BakeCache(key, bake(ctx));
+			CACHE.set(cached);
+		}
+		return cached.perLayer == null ? null : cached.perLayer.get(ctx.renderLayer());
+	}
+
+	/** Bake every render layer's tile quads for this block, or null if none/unavailable. */
+	@SuppressWarnings("unchecked")
+	private static Map<RenderType, List<BakedQuad>> bake(BlockRenderContext ctx) {
 		try {
 			BlockPos pos = ctx.pos();
 
@@ -187,7 +216,7 @@ public final class LittleTilesEmbeddiumBridge {
 
 			perLayer.values().removeIf(List::isEmpty);
 			if (perLayer.isEmpty()) return null;
-			return perLayer.get(ctx.renderLayer());
+			return perLayer;
 		} catch (Throwable t) {
 			return null;
 		}

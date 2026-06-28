@@ -196,3 +196,58 @@ idea {
 		downloadJavadoc = true
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Relax the bundled AcceleratedRendering OpenGL requirement.
+// AcceleratedRendering's neoforge.mods.toml hard-requires openGLVersion="[4.6,)".
+// FML validates that against Minecraft's GL *context version*, which on some
+// drivers is reported as 3.2 core even though the GPU exposes 4.x via ARB
+// extensions (e.g. ARB_direct_state_access). The strict [4.6,) gate then crashes
+// the whole game at load. We rewrite the bundled jar's requirement to [3.2,) so
+// it loads; AcceleratedRendering still checks the actual GL capabilities at runtime.
+// Inlined + no script-object references at execution time, to stay configuration-cache compatible.
+def relaxArGlJarProvider = tasks.named('jar', Jar).flatMap { it.archiveFile }
+
+tasks.register('relaxAcceleratedRenderingGl') {
+	description = 'Relax the bundled AcceleratedRendering openGLVersion requirement to [3.2,).'
+	dependsOn 'jar'
+	def jarFileProvider = relaxArGlJarProvider
+	outputs.upToDateWhen { false }
+	doLast {
+		File jar = jarFileProvider.get().asFile
+		if (!jar.exists()) { println '[AR-GL-patch] jar not found; skipping'; return }
+		def names = []
+		def data = [:]
+		def zf = new java.util.zip.ZipFile(jar)
+		try { zf.entries().each { e -> names << e.name; data[e.name] = zf.getInputStream(e).readAllBytes() } }
+		finally { zf.close() }
+		def arName = names.find { it.startsWith('META-INF/jarjar/') && it.toLowerCase().contains('acceleratedrendering') && it.endsWith('.jar') }
+		if (arName == null) { println '[AR-GL-patch] nested acceleratedrendering jar not found; skipping'; return }
+		def arNames = []
+		def arData = [:]
+		def zin = new java.util.zip.ZipInputStream(new ByteArrayInputStream((byte[]) data[arName]))
+		try { def e; while ((e = zin.getNextEntry()) != null) { arNames << e.name; arData[e.name] = zin.readAllBytes() } }
+		finally { zin.close() }
+		def tomlName = arData.containsKey('META-INF/neoforge.mods.toml') ? 'META-INF/neoforge.mods.toml' : 'META-INF/mods.toml'
+		if (!arData.containsKey(tomlName)) { println '[AR-GL-patch] AR toml not found; skipping'; return }
+		def toml = new String((byte[]) arData[tomlName], 'UTF-8')
+		def patched = toml.replace('openGLVersion="[4.6,)"', 'openGLVersion="[3.2,)"')
+		if (patched == toml) { println '[AR-GL-patch] nothing to patch (already relaxed)'; return }
+		arData[tomlName] = patched.getBytes('UTF-8')
+		def arBuf = new ByteArrayOutputStream()
+		def arOut = new java.util.zip.ZipOutputStream(arBuf)
+		try { arNames.each { nm -> arOut.putNextEntry(new java.util.zip.ZipEntry((String) nm)); arOut.write((byte[]) arData[nm]); arOut.closeEntry() } }
+		finally { arOut.close() }
+		data[arName] = arBuf.toByteArray()
+		def tmp = new File(jar.parentFile, jar.name + '.argltmp')
+		def out = new java.util.zip.ZipOutputStream(new FileOutputStream(tmp))
+		try { names.each { nm -> out.putNextEntry(new java.util.zip.ZipEntry((String) nm)); out.write((byte[]) data[nm]); out.closeEntry() } }
+		finally { out.close() }
+		jar.delete()
+		tmp.renameTo(jar)
+		println '[AR-GL-patch] relaxed acceleratedrendering openGLVersion [4.6,) -> [3.2,) in ' + jar.name
+	}
+}
+
+tasks.named('jar').configure { finalizedBy 'relaxAcceleratedRenderingGl' }
+tasks.named('assemble').configure { dependsOn 'relaxAcceleratedRenderingGl' }

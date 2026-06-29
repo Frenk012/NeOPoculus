@@ -1,6 +1,7 @@
 package net.irisshaders.batchedentityrendering.impl;
 
 import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.BufferUploader;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import it.unimi.dsi.fastutil.objects.Object2ObjectSortedMaps;
@@ -132,6 +133,14 @@ public class FullyBufferedMultiBufferSource extends MultiBufferSource.BufferSour
 
 		profiler.push("draw buffers");
 
+		// Embeddium manages its own VAO via a raw GlStateManager-bypassing tracker, so after terrain
+		// rendering the actually-bound VAO no longer matches vanilla's BufferUploader.lastImmediateBuffer
+		// cache. The immediate-draw path then skips re-binding the VAO (it thinks the right one is still
+		// bound) and glDrawElements fails with GL_INVALID_OPERATION "Array object is not active" — the
+		// batched entity/BE draw is dropped that frame, producing the transparent/rendered flicker on
+		// entities, block entities, held item and arm. Clear the stale cache so the next upload rebinds.
+		BufferUploader.reset();
+
 		for (RenderType type : renderOrder) {
 			type.setupRenderState();
 
@@ -158,6 +167,10 @@ public class FullyBufferedMultiBufferSource extends MultiBufferSource.BufferSour
 		if (!isReady) readyUp();
 
 		profiler.push("draw buffers");
+
+		// See endBatch(): drop the stale VAO cache left by Embeddium's raw VAO management so the
+		// immediate-draw path rebinds instead of drawing with no active VAO.
+		BufferUploader.reset();
 
 		List<RenderType> types = new ArrayList<>();
 

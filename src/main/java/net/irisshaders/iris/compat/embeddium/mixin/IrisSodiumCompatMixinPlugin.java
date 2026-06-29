@@ -50,16 +50,20 @@ public class IrisSodiumCompatMixinPlugin implements IMixinConfigPlugin {
 
 	@Override
 	public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+		// On macOS, disable the ENTIRE Iris<->Embeddium integration (see IS_MACOS). Gating only the
+		// shader/vertex-format mixins (monocle.*/oculus.*) merely moved the native crash earlier, into
+		// Embeddium's meshing stage (ChunkBuilderMeshingTask / BlockRenderer) still touched by the
+		// LittleTiles quad-injection mixins. Apple's GL-over-Metal can't take any of these, so fall all
+		// the way back to vanilla Embeddium chunk rendering — the exact config confirmed to load on the
+		// Mac. The only loss is that LittleTiles blocks won't render under Embeddium on macOS.
+		if (IS_MACOS) {
+			return false;
+		}
 		if (mixinClassName.endsWith(".copyEntity.ModelPartMixin") || mixinClassName.endsWith(".copyEntity.CuboidMixin")) {
 			return !isBendyLibLoaded;
 		}
 		if (mixinClassName.endsWith(".littletiles.MixinBERenderManagerInvalidate")) {
 			return isLittleTilesLoaded;
-		}
-		// On macOS, drop the Iris<->Embeddium chunk shader/vertex-format integration (see IS_MACOS):
-		// it crashes natively on Metal. The LittleTiles quad injection is format-independent, so keep it.
-		if (IS_MACOS && (mixinClassName.contains(".monocle.") || mixinClassName.contains(".oculus."))) {
-			return false;
 		}
 		return true;
 	}

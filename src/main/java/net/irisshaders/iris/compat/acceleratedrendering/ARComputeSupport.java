@@ -50,4 +50,34 @@ public final class ARComputeSupport {
 	public static boolean isUnsupported() {
 		return !isSupported();
 	}
+
+	private static Object dummyProgram;
+	private static boolean dummyProgramTried;
+
+	/**
+	 * A non-null placeholder {@code ComputeProgram} for the compute-unavailable path.
+	 *
+	 * AR's core static holders (e.g. {@code CoreBuffers.<clinit>}) eagerly fetch compute programs
+	 * through {@code ComputeShaderProgramLoader.getProgram} while constructing their program
+	 * dispatchers — outside both the resource-reload compile and the feature toggles. With no
+	 * programs loaded that getter throws ("...too early! Program is not loaded yet!"), poisoning the
+	 * static initializer and crashing during terrain load. {@code ComputeProgram(int)} merely stores
+	 * a GL program handle and runs no GL itself, so a handle-0 instance lets those constructors
+	 * complete (their {@code getUniform} calls resolve to location -1 harmlessly). The dispatchers are
+	 * never actually invoked because every feature reports disabled ({@code MixinAcceleratedFeatureGate}).
+	 */
+	public static Object dummyProgram() {
+		if (dummyProgramTried) {
+			return dummyProgram;
+		}
+		dummyProgramTried = true;
+		try {
+			Class<?> cp = Class.forName(
+				"com.github.argon4w.acceleratedrendering.core.backends.programs.ComputeProgram");
+			dummyProgram = cp.getConstructor(int.class).newInstance(0);
+		} catch (Throwable t) {
+			dummyProgram = null;
+		}
+		return dummyProgram;
+	}
 }

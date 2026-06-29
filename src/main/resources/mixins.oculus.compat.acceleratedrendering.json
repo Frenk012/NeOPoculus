@@ -7,7 +7,8 @@
   "client": [
     "CoreFeatureMixin",
     "MixinComputeShaderProgramLoader",
-    "MixinAcceleratedFeatureGate"
+    "MixinAcceleratedFeatureGate",
+    "MixinAcceleratedBufferSource"
   ],
   "injectors": {
     "defaultRequire": 1

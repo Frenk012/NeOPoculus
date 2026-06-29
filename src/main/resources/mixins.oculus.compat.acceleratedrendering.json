@@ -8,7 +8,8 @@
     "CoreFeatureMixin",
     "MixinComputeShaderProgramLoader",
     "MixinAcceleratedFeatureGate",
-    "MixinAcceleratedBufferSource"
+    "MixinAcceleratedBufferSource",
+    "MixinComputeProgram"
   ],
   "injectors": {
     "defaultRequire": 1

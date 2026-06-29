@@ -5,7 +5,9 @@
   "package": "net.irisshaders.iris.compat.acceleratedrendering.mixin",
   "compatibilityLevel": "JAVA_8",
   "client": [
-    "CoreFeatureMixin"
+    "CoreFeatureMixin",
+    "MixinComputeShaderProgramLoader",
+    "MixinAcceleratedFeatureGate"
   ],
   "injectors": {
     "defaultRequire": 1

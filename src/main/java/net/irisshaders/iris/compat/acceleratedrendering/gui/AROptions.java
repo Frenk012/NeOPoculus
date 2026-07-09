@@ -17,8 +17,8 @@ import org.embeddedt.embeddium.api.options.structure.OptionImpl;
 
 public class AROptions {
     
-    public static final Option<Integer> corePooledBufferSetSize;
-    public static final Option<Integer> corePooledElementBufferSize;
+    public static final Option<Integer> corePooledRingBufferSize;
+    public static final Option<Integer> corePooledBatchingSize;
     public static final Option<Integer> coreCachedImageSize;
     public static final Option<FeatureStatus> coreForceTranslucentAcceleration;
     public static final Option<FeatureStatus> coreCacheIdenticalPose;
@@ -32,18 +32,13 @@ public class AROptions {
     public static final Option<FeatureStatus> acceleratedItemRenderingBakeMeshForQuads;
     public static final Option<PipelineSetting> acceleratedItemRenderingDefaultPipeline;
     public static final Option<MeshType> acceleratedItemRenderingMeshType;
-    public static final Option<FeatureStatus> acceleratedBlockEntityRenderingFeatureStatus;
-    public static final Option<PipelineSetting> acceleratedBlockEntityRenderingDefaultPipeline;
-    public static final Option<MeshType> acceleratedBlockEntityRenderingMeshType;
     public static final Option<FeatureStatus> orientationCullingFeatureStatus;
     public static final Option<FeatureStatus> orientationCullingDefaultCulling;
     public static final Option<FeatureStatus> orientationCullingIgnoreCullState;
     public static final Option<FeatureStatus> irisCompatFeatureStatus;
     public static final Option<FeatureStatus> irisCompatOrientationCullingCompat;
     public static final Option<FeatureStatus> irisCompatShadowCulling;
-    public static final Option<FeatureStatus> irisCompatEntitiesCompat;
     public static final Option<FeatureStatus> irisCompatPolygonProcessing;
-    public static final Option<FeatureStatus> irisCompatFastRenderTypeCheck;
 
     public static final GenericBinding<ModConfigSpec.ConfigValue<Integer>,Integer> integerBinding = new GenericBinding<>(
             ModConfigSpec.ConfigValue::set,
@@ -63,7 +58,7 @@ public class AROptions {
     );
 
     static {
-        corePooledBufferSetSize = OptionImpl.createBuilder(Integer.TYPE,new ConfigValueStorage<>(FeatureConfig.CONFIG.corePooledBufferSetSize))
+        corePooledRingBufferSize = OptionImpl.createBuilder(Integer.TYPE,new ConfigValueStorage<>(FeatureConfig.CONFIG.corePooledRingBufferSize))
                 .setId(ARModInfo.location("core_settings.pooled_buffer_set_size"))
                 .setName(Component.translatable("acceleratedrendering.configuration.core_settings.pooled_buffer_set_size"))
                 .setTooltip(Component.translatable("acceleratedrendering.configuration.core_settings.pooled_buffer_set_size.tooltip"))
@@ -71,7 +66,7 @@ public class AROptions {
                 .setBinding(integerBinding)
                 .setImpact(OptionImpact.VARIES)
                 .build();
-        corePooledElementBufferSize = OptionImpl.createBuilder(Integer.TYPE,new ConfigValueStorage<>(FeatureConfig.CONFIG.corePooledElementBufferSize))
+        corePooledBatchingSize = OptionImpl.createBuilder(Integer.TYPE,new ConfigValueStorage<>(FeatureConfig.CONFIG.corePooledBatchingSize))
                 .setId(ARModInfo.location("core_settings.pooled_element_buffer_size"))
                 .setName(Component.translatable("acceleratedrendering.configuration.core_settings.pooled_element_buffer_size"))
                 .setTooltip(Component.translatable("acceleratedrendering.configuration.core_settings.pooled_element_buffer_size.tooltip"))
@@ -180,29 +175,6 @@ public class AROptions {
                 .setBinding(featureStatusBinding)
                 .setImpact(OptionImpact.VARIES)
                 .build();
-        acceleratedBlockEntityRenderingFeatureStatus = OptionImpl.createBuilder(FeatureStatus.class,new ConfigValueStorage<>(FeatureConfig.CONFIG.acceleratedBlockEntityRenderingFeatureStatus))
-                .setId(ARModInfo.location("accelerated_block_entity_rendering.feature_status"))
-                .setName(Component.translatable("acceleratedrendering.configuration.accelerated_block_entity_rendering.feature_status"))
-                .setTooltip(Component.translatable("acceleratedrendering.configuration.accelerated_block_entity_rendering.feature_status.tooltip"))
-                .setControl(FeatureStatusTickBoxControl::new)
-                .setBinding(featureStatusBinding)
-                .setImpact(OptionImpact.LOW)
-                .build();
-        acceleratedBlockEntityRenderingDefaultPipeline = OptionImpl.createBuilder(PipelineSetting.class,new ConfigValueStorage<>(FeatureConfig.CONFIG.acceleratedBlockEntityRenderingDefaultPipeline))
-                .setId(ARModInfo.location("accelerated_block_entity_rendering.default_pipeline"))
-                .setName(Component.translatable("acceleratedrendering.configuration.accelerated_block_entity_rendering.default_pipeline"))
-                .setTooltip(Component.translatable("acceleratedrendering.configuration.accelerated_block_entity_rendering.default_pipeline.tooltip"))
-                .setControl(e->new CyclingControl<>(e,PipelineSetting.class))
-                .setBinding(pipelineSettingBinding)
-                .build();
-        acceleratedBlockEntityRenderingMeshType = OptionImpl.createBuilder(MeshType.class,new ConfigValueStorage<>(FeatureConfig.CONFIG.acceleratedBlockEntityRenderingMeshType))
-                .setId(ARModInfo.location("accelerated_block_entity_rendering.mesh_type"))
-                .setName(Component.translatable("acceleratedrendering.configuration.accelerated_block_entity_rendering.mesh_type"))
-                .setTooltip(Component.translatable("acceleratedrendering.configuration.accelerated_block_entity_rendering.mesh_type.tooltip"))
-                .setControl(e->new CyclingControl<>(e,MeshType.class))
-                .setBinding(meshTypeBinding)
-                .setImpact(OptionImpact.VARIES)
-                .build();
         orientationCullingFeatureStatus = OptionImpl.createBuilder(FeatureStatus.class,new ConfigValueStorage<>(FeatureConfig.CONFIG.orientationCullingFeatureStatus))
                 .setId(ARModInfo.location("orientation_culling.feature_status"))
                 .setName(Component.translatable("acceleratedrendering.configuration.orientation_culling.feature_status"))
@@ -245,24 +217,10 @@ public class AROptions {
                 .setControl(FeatureStatusTickBoxControl::new)
                 .setBinding(featureStatusBinding)
                 .build();
-        irisCompatEntitiesCompat = OptionImpl.createBuilder(FeatureStatus.class,new ConfigValueStorage<>(FeatureConfig.CONFIG.irisCompatEntitiesCompat))
-                .setId(ARModInfo.location("iris_compatibility.entities_compatibility"))
-                .setName(Component.translatable("acceleratedrendering.configuration.iris_compatibility.entities_compatibility"))
-                .setTooltip(Component.translatable("acceleratedrendering.configuration.iris_compatibility.entities_compatibility.tooltip"))
-                .setControl(FeatureStatusTickBoxControl::new)
-                .setBinding(featureStatusBinding)
-                .build();
         irisCompatPolygonProcessing = OptionImpl.createBuilder(FeatureStatus.class,new ConfigValueStorage<>(FeatureConfig.CONFIG.irisCompatPolygonProcessing))
                 .setId(ARModInfo.location("iris_compatibility.polygon_processing"))
                 .setName(Component.translatable("acceleratedrendering.configuration.iris_compatibility.polygon_processing"))
                 .setTooltip(Component.translatable("acceleratedrendering.configuration.iris_compatibility.polygon_processing.tooltip"))
-                .setControl(FeatureStatusTickBoxControl::new)
-                .setBinding(featureStatusBinding)
-                .build();
-        irisCompatFastRenderTypeCheck = OptionImpl.createBuilder(FeatureStatus.class,new ConfigValueStorage<>(FeatureConfig.CONFIG.irisCompatFastRenderTypeCheck))
-                .setId(ARModInfo.location("iris_compatability.fast_render_type_check"))
-                .setName(Component.translatable("acceleratedrendering.configuration.iris_compatability.fast_render_type_check"))
-                .setTooltip(Component.translatable("acceleratedrendering.configuration.iris_compatability.fast_render_type_check.tooltip"))
                 .setControl(FeatureStatusTickBoxControl::new)
                 .setBinding(featureStatusBinding)
                 .build();

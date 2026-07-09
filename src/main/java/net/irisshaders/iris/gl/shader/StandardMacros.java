@@ -51,7 +51,10 @@ public class StandardMacros {
 		define(standardDefines, "IS_IRIS");
 
 
-		if (LoadingModList.get().getModFileById("distanthorizons") != null && DHCompat.hasRenderingEnabled()) {
+		boolean dhActive = LoadingModList.get().getModFileById("distanthorizons") != null && DHCompat.hasRenderingEnabled();
+		if (dhActive || net.irisshaders.iris.horizon.HorizonRuntime.isActive()) {
+			// Horizon stands in for Distant Horizons when the DH mod is absent
+			// so packs use their extended DH fog/lighting path for the LODs.
 			define(standardDefines, "DISTANT_HORIZONS");
 		}
 

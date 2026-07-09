@@ -21,7 +21,25 @@ public final class LodWorld {
 	 * that requires remeshing.
 	 */
 	public boolean put(LodChunk chunk) {
+		return put(chunk, false);
+	}
+
+	public boolean put(LodChunk chunk, boolean preserveColors) {
 		LodChunk previous = chunks.get(LodChunk.key(chunk.chunkX, chunk.chunkZ));
+		if (preserveColors && previous != null) {
+			// Unload snapshot: biome context may be degraded. Keep the stored
+			// (correctly tinted) colors for every column whose shape is
+			// unchanged; only genuinely edited columns take the new color.
+			for (int i = 0; i < chunk.color.length; i++) {
+				if (previous.height[i] == chunk.height[i]
+					&& previous.waterHeight[i] == chunk.waterHeight[i]
+					&& previous.featureTop[i] == chunk.featureTop[i]
+					&& previous.featureBottom[i] == chunk.featureBottom[i]) {
+					chunk.color[i] = previous.color[i];
+					chunk.featureColor[i] = previous.featureColor[i];
+				}
+			}
+		}
 		boolean changed = previous == null
 			|| !java.util.Arrays.equals(previous.height, chunk.height)
 			|| !java.util.Arrays.equals(previous.waterHeight, chunk.waterHeight)

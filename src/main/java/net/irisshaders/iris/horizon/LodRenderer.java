@@ -53,6 +53,13 @@ public final class LodRenderer {
 	private int maskTexture;
 	private final java.nio.ByteBuffer maskBuffer = org.lwjgl.system.MemoryUtil.memAlloc(MASK_SIZE * MASK_SIZE);
 	private final byte[] maskData = new byte[MASK_SIZE * MASK_SIZE];
+	// Bumped on every mask rebuild; invalidates per-mesh coverage caches.
+	// Starts at 1 so a freshly created mesh (epoch 0) never gets a false hit.
+	private long maskEpoch = 1;
+	// Draw-buffer layout of the last seen shader-pack FBO (legacy path).
+	private final int[] fboDrawBuffers = new int[8];
+	private int cachedDrawBuffersFbo = -1;
+	private boolean cachedDrawBuffersMulti;
 	private int maskOriginX;
 	private int maskOriginZ;
 	private int maskCenterX = Integer.MIN_VALUE;
@@ -188,10 +195,144 @@ public final class LodRenderer {
 		}
 	}
 
+	private HorizonIrisProgram irisProgram;
+	private net.irisshaders.iris.gl.framebuffer.GlFramebuffer irisFramebuffer;
+	private Object irisPipeline;
+	private int irisDepthTex;
+	private boolean irisFailed;
+
+	/**
+	 * Shaderpack path: draws every region through the pack's dh_terrain
+	 * program into the pack's gbuffers (plus the main depth buffer), exactly
+	 * like Iris's Distant Horizons compat does for DH geometry.
+	 *
+	 * @return true when the pass was handled here (a pack is active)
+	 */
+	private boolean renderIris(Matrix4f modelView, Matrix4f projection, double camX, double camY, double camZ,
+							   int renderDistanceChunks) {
+		if (irisFailed) {
+			return false;
+		}
+		if (!(net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable()
+			instanceof net.irisshaders.iris.pipeline.IrisRenderingPipeline pipeline)) {
+			return false;
+		}
+		try {
+			var terrain = pipeline.getDHTerrainShader();
+			if (terrain.isEmpty()) {
+				// Pack without dh programs: nothing sensible to shade LODs
+				// with; fall back to the legacy pass.
+				return false;
+			}
+			int depthTex = pipeline.getHorizonDepthTexture();
+			// Publish for DHCompat so the pack's DH composite/fog passes read
+			// the same depth Horizon rendered into.
+			HorizonRuntime.setMainDepthTex(depthTex);
+			if (irisPipeline != pipeline || irisDepthTex != depthTex) {
+				if (irisProgram != null && irisPipeline != pipeline) {
+					irisProgram.free();
+					irisProgram = null;
+				}
+				if (irisFramebuffer != null) {
+					irisFramebuffer.destroy();
+				}
+				if (irisProgram == null) {
+					irisProgram = HorizonIrisProgram.createProgram("horizon_terrain", terrain.get(),
+						pipeline.getCustomUniforms(), pipeline);
+				}
+				irisFramebuffer = pipeline.createHorizonFramebuffer(terrain.get());
+				irisPipeline = pipeline;
+				irisDepthTex = depthTex;
+			}
+
+			mvp.set(projection).mul(modelView);
+			frustum.set(mvp);
+
+			int prevProgram = GL33C.glGetInteger(GL33C.GL_CURRENT_PROGRAM);
+			int prevVao = GL33C.glGetInteger(GL33C.GL_VERTEX_ARRAY_BINDING);
+			int prevFramebuffer = GL33C.glGetInteger(GL33C.GL_DRAW_FRAMEBUFFER_BINDING);
+
+			irisFramebuffer.bind();
+			irisProgram.bind();
+			irisProgram.fillUniformData(projection, modelView);
+			// irisExtra (material id, normal index) is a real per-vertex
+			// attribute now (see LodMesher.EXTRA_OFFSET), so the deferred
+			// pack gets a correct gbuffer normal per face instead of a flat
+			// constant that most drivers dropped to a downward normal.
+
+			GL33C.glEnable(GL33C.GL_DEPTH_TEST);
+			GL33C.glDepthFunc(GL33C.GL_LEQUAL);
+			// Same trick as the legacy pass: push LOD fragments slightly back
+			// so coplanar real terrain always wins the depth test.
+			GL33C.glEnable(GL33C.GL_POLYGON_OFFSET_FILL);
+			GL33C.glPolygonOffset(3.0f, 3.0f);
+			GL33C.glDisable(GL33C.GL_CULL_FACE);
+
+			int camChunkX = Math.floorDiv((int) Math.floor(camX), 16);
+			int camChunkZ = Math.floorDiv((int) Math.floor(camZ), 16);
+			double maxDist = HorizonConfig.get().getLodDistanceBlocks() + 192.0;
+			double maxDistSq = maxDist * maxDist;
+
+			for (LodRegionMesh mesh : meshes.values()) {
+				int regionCenterChunkX = (mesh.regionX << LodMesher.REGION_CHUNK_BITS) + 4;
+				int regionCenterChunkZ = (mesh.regionZ << LodMesher.REGION_CHUNK_BITS) + 4;
+				int cheb = Math.max(Math.abs(regionCenterChunkX - camChunkX), Math.abs(regionCenterChunkZ - camChunkZ)) + 4;
+				if (cheb + 8 <= renderDistanceChunks && isRegionFullyCovered(mesh)) {
+					continue;
+				}
+
+				float ox = (float) (mesh.regionX * (long) LodMesher.REGION_BLOCKS - camX);
+				float oz = (float) (mesh.regionZ * (long) LodMesher.REGION_BLOCKS - camZ);
+				double centerX = ox + LodMesher.REGION_BLOCKS * 0.5;
+				double centerZ = oz + LodMesher.REGION_BLOCKS * 0.5;
+				if (centerX * centerX + centerZ * centerZ > maxDistSq) {
+					continue;
+				}
+				float relY = (float) -camY;
+				if (!frustum.testAab(ox, mesh.minY + relY, oz, ox + LodMesher.REGION_BLOCKS, mesh.maxY + relY, oz + LodMesher.REGION_BLOCKS)) {
+					continue;
+				}
+
+				// ponytail: no loaded-chunk mask discard in the pack program,
+				// polygon offset alone hides the overlap; if seams flicker
+				// under shaders, port the u_chunkMask discard into the
+				// patched source via DHTerrainTransformer.
+				irisProgram.setModelPos(ox, relY - LodMesher.Y_BIAS, oz);
+				mesh.drawIris();
+			}
+
+			GL33C.glDisable(GL33C.GL_POLYGON_OFFSET_FILL);
+			GL33C.glPolygonOffset(0.0f, 0.0f);
+			GL33C.glEnable(GL33C.GL_CULL_FACE);
+			irisProgram.unbind();
+			GL33C.glBindFramebuffer(GL33C.GL_DRAW_FRAMEBUFFER, prevFramebuffer);
+			GL33C.glBindVertexArray(prevVao);
+			GL33C.glUseProgram(prevProgram);
+			return true;
+		} catch (Throwable t) {
+			net.irisshaders.iris.Iris.logger.error("Horizon: shaderpack LOD path failed, falling back to legacy pass", t);
+			irisFailed = true;
+			if (irisProgram != null) {
+				irisProgram.free();
+				irisProgram = null;
+			}
+			return false;
+		}
+	}
+
 	public void render(Matrix4f modelView, Matrix4f projection, double camX, double camY, double camZ,
 					   float fogStart, float fogEnd, float[] fogColor, float brightness,
 					   net.minecraft.client.multiplayer.ClientLevel level, int renderDistanceChunks) {
-		if (shaderFailed || meshes.isEmpty()) {
+		if (meshes.isEmpty()) {
+			return;
+		}
+		// With a shaderpack active, route the LODs through the pack's own
+		// dh_terrain program so they receive full gbuffer shading; the flat
+		// legacy program below only looks right on the vanilla pipeline.
+		if (renderIris(modelView, projection, camX, camY, camZ, renderDistanceChunks)) {
+			return;
+		}
+		if (shaderFailed) {
 			return;
 		}
 		if (program == 0 && !initShader()) {
@@ -215,19 +356,25 @@ public final class LodRenderer {
 		// and corrupt deferred shading. Restrict the draw to attachment 0
 		// for the duration of the pass, then restore the full set.
 		int[] prevDrawBuffers = null;
-		if (GL33C.glGetInteger(GL33C.GL_DRAW_FRAMEBUFFER_BINDING) != 0) {
-			prevDrawBuffers = new int[8];
-			boolean multi = false;
-			for (int i = 0; i < 8; i++) {
-				prevDrawBuffers[i] = GL33C.glGetInteger(GL33C.GL_DRAW_BUFFER0 + i);
-				if (i > 0 && prevDrawBuffers[i] != GL33C.GL_NONE) {
-					multi = true;
+		int boundFbo = GL33C.glGetInteger(GL33C.GL_DRAW_FRAMEBUFFER_BINDING);
+		if (boundFbo != 0) {
+			// glDrawBuffers is FBO-attached state that shader packs configure
+			// once per framebuffer; re-query only when the bound FBO changes
+			// instead of paying 8 glGetInteger round-trips every frame.
+			if (boundFbo != cachedDrawBuffersFbo) {
+				boolean multi = false;
+				for (int i = 0; i < 8; i++) {
+					fboDrawBuffers[i] = GL33C.glGetInteger(GL33C.GL_DRAW_BUFFER0 + i);
+					if (i > 0 && fboDrawBuffers[i] != GL33C.GL_NONE) {
+						multi = true;
+					}
 				}
+				cachedDrawBuffersFbo = boundFbo;
+				cachedDrawBuffersMulti = multi;
 			}
-			if (multi) {
-				GL33C.glDrawBuffers(prevDrawBuffers[0]);
-			} else {
-				prevDrawBuffers = null;
+			if (cachedDrawBuffersMulti) {
+				prevDrawBuffers = fboDrawBuffers;
+				GL33C.glDrawBuffers(fboDrawBuffers[0]);
 			}
 		}
 
@@ -286,10 +433,12 @@ public final class LodRenderer {
 				continue;
 			}
 
-			float oy = (float) -camY;
-			if (!frustum.testAab(ox, mesh.minY + oy, oz, ox + LodMesher.REGION_BLOCKS, mesh.maxY + oy, oz + LodMesher.REGION_BLOCKS)) {
+			float relY = (float) -camY;
+			if (!frustum.testAab(ox, mesh.minY + relY, oz, ox + LodMesher.REGION_BLOCKS, mesh.maxY + relY, oz + LodMesher.REGION_BLOCKS)) {
 				continue;
 			}
+			// Stored vertex y carries LodMesher.Y_BIAS; the offset removes it.
+			float oy = relY - LodMesher.Y_BIAS;
 
 			// Always cut LOD against the loaded-chunk mask, including the
 			// full-resolution collar — otherwise LOD stays drawn on top of
@@ -341,21 +490,32 @@ public final class LodRenderer {
 		maskOriginZ = camChunkZ - MASK_SIZE / 2;
 
 		var chunkSource = level.getChunkSource();
-		for (int j = 0; j < MASK_SIZE; j++) {
+		// Everything outside the render-distance circle is uncovered by
+		// definition, so only probe hasChunk inside the circle instead of the
+		// whole MASK_SIZE^2 grid (25k probes -> ~pi*rd^2).
+		java.util.Arrays.fill(maskData, (byte) 0);
+		int rd = renderDistanceChunks;
+		int rdSq = rd * rd;
+		int jMin = Math.max(0, MASK_SIZE / 2 - rd);
+		int jMax = Math.min(MASK_SIZE - 1, MASK_SIZE / 2 + rd);
+		for (int j = jMin; j <= jMax; j++) {
 			int cz = maskOriginZ + j;
 			int dz = cz - camChunkZ;
-			for (int i = 0; i < MASK_SIZE; i++) {
+			// Euclidean circle to match vanilla's circular chunk rendering:
+			// a chebyshev square left the diagonal corners (loaded but not
+			// rendered) marked covered, so neither real terrain nor LOD drew
+			// there. Circle coverage removes that perimeter gap.
+			int dxMax = (int) Math.sqrt((double) (rdSq - dz * dz));
+			int iMin = Math.max(0, MASK_SIZE / 2 - dxMax);
+			int iMax = Math.min(MASK_SIZE - 1, MASK_SIZE / 2 + dxMax);
+			for (int i = iMin; i <= iMax; i++) {
 				int cx = maskOriginX + i;
-				int dx = cx - camChunkX;
-				// Euclidean circle to match vanilla's circular chunk rendering:
-				// a chebyshev square left the diagonal corners (loaded but not
-				// rendered) marked covered, so neither real terrain nor LOD drew
-				// there. Circle coverage removes that perimeter gap.
-				boolean covered = (dx * dx + dz * dz) <= renderDistanceChunks * renderDistanceChunks
-					&& chunkSource.hasChunk(cx, cz);
-				maskData[i + j * MASK_SIZE] = covered ? (byte) 255 : 0;
+				if (chunkSource.hasChunk(cx, cz)) {
+					maskData[i + j * MASK_SIZE] = (byte) 255;
+				}
 			}
 		}
+		maskEpoch++;
 
 		maskBuffer.clear();
 		maskBuffer.put(maskData).flip();
@@ -405,6 +565,18 @@ public final class LodRenderer {
 
 	/** CPU-side draw skip: true when all 8x8 chunks of a region are covered. */
 	private boolean isRegionFullyCovered(LodRegionMesh mesh) {
+		// Coverage only changes when the mask is rebuilt; cache per epoch
+		// instead of rescanning 10x10 mask cells per region per frame.
+		if (mesh.coveredEpoch == maskEpoch) {
+			return mesh.coveredValue;
+		}
+		boolean covered = computeRegionFullyCovered(mesh);
+		mesh.coveredEpoch = maskEpoch;
+		mesh.coveredValue = covered;
+		return covered;
+	}
+
+	private boolean computeRegionFullyCovered(LodRegionMesh mesh) {
 		int minCx = mesh.regionX << LodMesher.REGION_CHUNK_BITS;
 		int minCz = mesh.regionZ << LodMesher.REGION_CHUNK_BITS;
 		int chunks = 1 << LodMesher.REGION_CHUNK_BITS;
@@ -470,6 +642,9 @@ public final class LodRenderer {
 
 	/** Render-thread: frees all GPU resources (world unload). */
 	public void clear() {
+		// Shader pack reloads can recycle FBO ids with a different draw-buffer
+		// layout; drop the cached layout so it is re-queried.
+		cachedDrawBuffersFbo = -1;
 		synchronized (epochLock) {
 			epoch++;
 			LodMesher.MeshData pending;

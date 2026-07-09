@@ -1361,6 +1361,23 @@ public class IrisRenderingPipeline implements WorldRenderingPipeline, ShaderRend
 				sources.getDirectives().getDrawBuffers());
 	}
 
+	/**
+	 * Framebuffer for the Horizon LOD pass: the pack's dh_terrain draw
+	 * buffers plus the main depth texture attached, so LODs depth-test
+	 * against real terrain in the same depth buffer.
+	 */
+	public GlFramebuffer createHorizonFramebuffer(ProgramSource sources) {
+		GlFramebuffer framebuffer = renderTargets.createDHFramebuffer(flippedAfterPrepare,
+				sources.getDirectives().getDrawBuffers());
+		framebuffer.addDepthAttachment(renderTargets.getDepthTexture());
+		return framebuffer;
+	}
+
+	/** Main depth texture id; changes when render targets resize. */
+	public int getHorizonDepthTexture() {
+		return renderTargets.getDepthTexture();
+	}
+
 	public ImmutableSet<Integer> getFlippedBeforeShadow() {
 		return flippedBeforeShadow;
 	}

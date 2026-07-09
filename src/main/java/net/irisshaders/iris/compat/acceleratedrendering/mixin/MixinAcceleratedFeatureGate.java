@@ -15,7 +15,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Pseudo
 @Mixin(targets = {
-	"com.github.argon4w.acceleratedrendering.features.blocks.AcceleratedBlockEntityRenderingFeature",
 	"com.github.argon4w.acceleratedrendering.features.entities.AcceleratedEntityRenderingFeature",
 	"com.github.argon4w.acceleratedrendering.features.items.AcceleratedItemRenderingFeature",
 	"com.github.argon4w.acceleratedrendering.features.text.AcceleratedTextRenderingFeature",

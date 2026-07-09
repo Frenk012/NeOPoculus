@@ -24,8 +24,8 @@ public class EmbeddiumEvent {
         if(LoadingModList.get().getModFileById("acceleratedrendering") == null)return;
 
         OptionGroup core = OptionGroup.createBuilder()
-                .add(AROptions.corePooledBufferSetSize)
-                .add(AROptions.corePooledElementBufferSize)
+                .add(AROptions.corePooledRingBufferSize)
+                .add(AROptions.corePooledBatchingSize)
                 .add(AROptions.coreCachedImageSize)
                 .add(AROptions.coreForceTranslucentAcceleration)
                 .add(AROptions.coreCacheIdenticalPose)
@@ -38,9 +38,6 @@ public class EmbeddiumEvent {
                 .setId(ARModInfo.location("configuration.accelerated_entity_rendering"))
                 .build();
         OptionGroup blockEntity = OptionGroup.createBuilder()
-                .add(AROptions.acceleratedBlockEntityRenderingFeatureStatus)
-                .add(AROptions.acceleratedBlockEntityRenderingDefaultPipeline)
-                .add(AROptions.acceleratedBlockEntityRenderingMeshType)
                 .setId(ARModInfo.location("configuration.accelerated_block_entity_rendering"))
                 .build();
         OptionGroup text = OptionGroup.createBuilder()
@@ -66,9 +63,7 @@ public class EmbeddiumEvent {
                 .add(AROptions.irisCompatFeatureStatus)
                 .add(AROptions.irisCompatOrientationCullingCompat)
                 .add(AROptions.irisCompatShadowCulling)
-                .add(AROptions.irisCompatEntitiesCompat)
                 .add(AROptions.irisCompatPolygonProcessing)
-                .add(AROptions.irisCompatFastRenderTypeCheck)
                 .setId(ARModInfo.location("configuration.iris_compatibility"))
                 .build();
 

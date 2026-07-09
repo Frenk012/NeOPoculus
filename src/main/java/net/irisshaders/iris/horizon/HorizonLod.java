@@ -53,7 +53,10 @@ public final class HorizonLod {
 	private boolean registered;
 
 	/** Chunks awaiting LOD capture; drained a few per tick to avoid spikes when moving. */
-	private final java.util.concurrent.ConcurrentLinkedQueue<LevelChunk> captureQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+	private record CaptureTask(LevelChunk chunk, boolean preserveColors) {
+	}
+
+	private final java.util.concurrent.ConcurrentLinkedQueue<CaptureTask> captureQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
 	private static final int MAX_CAPTURES_PER_TICK = 8;
 
 	/** Incremental scan cursor: ring currently being swept and its center. */
@@ -135,7 +138,7 @@ public final class HorizonLod {
 			return;
 		}
 		ensureWorld(level);
-		captureQueue.add(chunk);
+		captureQueue.add(new CaptureTask(chunk, false));
 	}
 
 	private void onChunkUnload(ChunkEvent.Unload event) {
@@ -143,11 +146,14 @@ public final class HorizonLod {
 		if (!(event.getLevel() instanceof ClientLevel) || !(event.getChunk() instanceof LevelChunk chunk)) {
 			return;
 		}
-		// Final snapshot: catches any block changes made while loaded.
-		captureQueue.add(chunk);
+		// Final snapshot: catches any block changes made while loaded. The
+		// chunk's neighbors may already be out of the client cache, so biome
+		// blending degrades to defaults -- preserve stored colors for columns
+		// whose shape did not change instead of clobbering good tints.
+		captureQueue.add(new CaptureTask(chunk, true));
 	}
 
-	private void captureChunk(LevelChunk chunk) {
+	private void captureChunk(LevelChunk chunk, boolean preserveColors) {
 		LodWorld w = world;
 		if (w == null) {
 			return;
@@ -159,7 +165,7 @@ public final class HorizonLod {
 		}
 		try {
 			LodChunk lod = LodCapture.capture(chunk);
-			if (w.put(lod)) {
+			if (w.put(lod, preserveColors)) {
 				markRenderRegionsDirty(lod.chunkX, lod.chunkZ);
 			}
 		} catch (Throwable t) {
@@ -264,11 +270,11 @@ public final class HorizonLod {
 		// Spread chunk captures over ticks so fast movement (many chunk
 		// loads at once) doesn't stall the client thread in a burst.
 		for (int n = 0; n < MAX_CAPTURES_PER_TICK; n++) {
-			LevelChunk chunk = captureQueue.poll();
-			if (chunk == null) {
+			CaptureTask task = captureQueue.poll();
+			if (task == null) {
 				break;
 			}
-			captureChunk(chunk);
+			captureChunk(task.chunk(), task.preserveColors());
 		}
 
 		scheduleMeshes(mc);

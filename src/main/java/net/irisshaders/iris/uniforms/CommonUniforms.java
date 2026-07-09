@@ -167,7 +167,14 @@ public final class CommonUniforms {
 				.uniform3d(PER_FRAME, "skyColor", CommonUniforms::getSkyColor)
 				.uniform1f(PER_FRAME, "dhFarPlane", DHCompat::getFarPlane)
 				.uniform1f(PER_FRAME, "dhNearPlane", DHCompat::getNearPlane)
-				.uniform1i(PER_FRAME, "dhRenderDistance", DHCompat::getRenderDistance);
+				.uniform1i(PER_FRAME, "dhRenderDistance", DHCompat::getRenderDistance)
+				// dhProjection* are declared behind #ifdef DISTANT_HORIZONS in
+				// composite passes but Iris only feeds them to the DH terrain
+				// programs; provide them globally so the Horizon LOD path
+				// doesn't leave composites with zero matrices.
+				.uniformMatrix(PER_FRAME, "dhProjection", DHCompat::getProjection)
+				.uniformMatrix(PER_FRAME, "dhProjectionInverse", () -> DHCompat.getProjection().invert(new org.joml.Matrix4f()))
+				.uniformMatrix(PER_FRAME, "dhPreviousProjection", DHCompat::getProjection);
 	}
 
 	private static boolean isOnGround() {

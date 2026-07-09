@@ -91,7 +91,10 @@ public class DHCompat {
 	}
 
 	public static float getFarPlane() {
-		if (!dhPresent) return 0.01f;
+		if (!dhPresent) {
+			return net.irisshaders.iris.horizon.HorizonRuntime.isActive()
+				? net.irisshaders.iris.horizon.HorizonRuntime.farPlane() : 0.01f;
+		}
 
 		try {
 			return (float) getFarPlane.invoke();
@@ -101,7 +104,10 @@ public class DHCompat {
 	}
 
 	public static float getNearPlane() {
-		if (!dhPresent) return 0.01f;
+		if (!dhPresent) {
+			return net.irisshaders.iris.horizon.HorizonRuntime.isActive()
+				? net.irisshaders.iris.horizon.HorizonRuntime.nearPlane() : 0.01f;
+		}
 
 		try {
 			return (float) getNearPlane.invoke();
@@ -111,7 +117,11 @@ public class DHCompat {
 	}
 
 	public static int getRenderDistance() {
-		if (!dhPresent) return Minecraft.getInstance().options.getEffectiveRenderDistance();
+		if (!dhPresent) {
+			return net.irisshaders.iris.horizon.HorizonRuntime.isActive()
+				? net.irisshaders.iris.horizon.HorizonRuntime.renderDistanceChunks()
+				: Minecraft.getInstance().options.getEffectiveRenderDistance();
+		}
 
 		try {
 			return (int) getRenderDistance.invoke();
@@ -151,7 +161,13 @@ public class DHCompat {
 	}
 
 	public int getDepthTex() {
-		if (compatInternalInstance == null) return -1;
+		if (compatInternalInstance == null) {
+			// Horizon writes its LODs into the main depth buffer, so alias
+			// dhDepthTex to it: the pack's DH composite passes read a
+			// consistent depth for the LOD terrain.
+			return net.irisshaders.iris.horizon.HorizonRuntime.isActive()
+				? net.irisshaders.iris.horizon.HorizonRuntime.mainDepthTex() : -1;
+		}
 
 		try {
 			return (int) getDepthTex.invoke(compatInternalInstance);
@@ -161,7 +177,10 @@ public class DHCompat {
 	}
 
 	public int getDepthTexNoTranslucent() {
-		if (compatInternalInstance == null) return -1;
+		if (compatInternalInstance == null) {
+			return net.irisshaders.iris.horizon.HorizonRuntime.isActive()
+				? net.irisshaders.iris.horizon.HorizonRuntime.mainDepthTex() : -1;
+		}
 
 		try {
 			return (int) getDepthTexNoTranslucent.invoke(compatInternalInstance);

@@ -22,11 +22,18 @@ public final class LodMesher {
 	 * Bytes per vertex: 3 shorts position (region-local x/z and absolute y
 	 * all fit in 16 bits), 2 bytes pad for alignment, 4 bytes RGBA.
 	 */
-	public static final int STRIDE = 12;
+	public static final int STRIDE = 16;
 	/** Byte offset of the y coordinate within a vertex. */
 	public static final int Y_OFFSET = 2;
 	/** Byte offset of the color within a vertex. */
 	public static final int COLOR_OFFSET = 8;
+	/**
+	 * Byte offset of irisExtra (4 unsigned bytes: material id, normal index,
+	 * 0, 0) — the DH terrain vertex format the shaderpack path consumes as a
+	 * uvec4. The normal index feeds the pack's gbuffer normal, so deferred
+	 * packs (Complementary, Bliss) light the LOD instead of leaving it dark.
+	 */
+	public static final int EXTRA_OFFSET = 12;
 
 	public record MeshData(int regionX, int regionZ, int scale, ByteBuffer vertexData, int vertexCount) {
 		public void free() {
@@ -373,23 +380,58 @@ public final class LodMesher {
 
 	private static int quad(ByteBuffer buf, int x1, int y1, int z1, int x2, int y2, int z2,
 							int x3, int y3, int z3, int x4, int y4, int z4, int color) {
-		vertex(buf, x1, y1, z1, color);
-		vertex(buf, x2, y2, z2, color);
-		vertex(buf, x3, y3, z3, color);
-		vertex(buf, x3, y3, z3, color);
-		vertex(buf, x4, y4, z4, color);
-		vertex(buf, x1, y1, z1, color);
+		int n = normalIndex(x1, y1, z1, x2, y2, z2, x3, y3, z3);
+		vertex(buf, x1, y1, z1, color, n);
+		vertex(buf, x2, y2, z2, color, n);
+		vertex(buf, x3, y3, z3, color, n);
+		vertex(buf, x3, y3, z3, color, n);
+		vertex(buf, x4, y4, z4, color, n);
+		vertex(buf, x1, y1, z1, color, n);
 		return 6;
 	}
 
-	private static void vertex(ByteBuffer buf, int x, int y, int z, int rgb) {
+	/**
+	 * Added to every stored y so coordinates are non-negative: the Iris
+	 * shaderpack path reads the position attribute as a uvec4 (DH terrain
+	 * vertex format), where a negative short would wrap. Renderers subtract
+	 * it back via their offset uniform.
+	 */
+	public static final int Y_BIAS = 512;
+	/** vPosition.w meta for the DH-format path: block light 0, sky light 15. */
+	private static final short LIGHT_META = 0x000F;
+
+	private static void vertex(ByteBuffer buf, int x, int y, int z, int rgb, int normalIndex) {
 		buf.putShort((short) x);
-		buf.putShort((short) y);
+		buf.putShort((short) (y + Y_BIAS));
 		buf.putShort((short) z);
-		buf.putShort((short) 0); // pad to a 4-byte boundary
+		buf.putShort(LIGHT_META);
 		buf.put((byte) ((rgb >> 16) & 0xFF));
 		buf.put((byte) ((rgb >> 8) & 0xFF));
 		buf.put((byte) (rgb & 0xFF));
 		buf.put((byte) 255);
+		buf.put((byte) 0);              // irisExtra.x = material id
+		buf.put((byte) normalIndex);    // irisExtra.y = normal index
+		buf.put((byte) 0);
+		buf.put((byte) 0);
+	}
+
+	/**
+	 * Axis-aligned normal index for a quad, in the DH irisNormals order
+	 * {-Y, +Y, -Z, +Z, -X, +X}, from the face's winding.
+	 */
+	private static int normalIndex(int x1, int y1, int z1, int x2, int y2, int z2, int x3, int y3, int z3) {
+		int ax = x2 - x1, ay = y2 - y1, az = z2 - z1;
+		int bx = x3 - x1, by = y3 - y1, bz = z3 - z1;
+		int nx = ay * bz - az * by;
+		int ny = az * bx - ax * bz;
+		int nz = ax * by - ay * bx;
+		int axn = Math.abs(nx), ayn = Math.abs(ny), azn = Math.abs(nz);
+		if (ayn >= axn && ayn >= azn) {
+			return ny >= 0 ? 1 : 0;
+		}
+		if (azn >= axn) {
+			return nz >= 0 ? 3 : 2;
+		}
+		return nx >= 0 ? 5 : 4;
 	}
 }

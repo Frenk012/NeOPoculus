@@ -23,7 +23,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(targets = "com.github.argon4w.acceleratedrendering.core.buffers.accelerated.AcceleratedBufferSource", remap = false)
 public class MixinAcceleratedBufferSource {
 
-	@Inject(method = "drawBuffers()V", at = @At("HEAD"), cancellable = true, remap = false)
+	@Inject(method = "drawBuffers", at = @At("HEAD"), cancellable = true, remap = false)
 	private void iris$skipDispatchWhenComputeUnsupported(CallbackInfo ci) {
 		if (ARComputeSupport.isUnsupported()) {
 			ci.cancel();

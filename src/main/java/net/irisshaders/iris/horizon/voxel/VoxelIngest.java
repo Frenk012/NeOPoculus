@@ -100,10 +100,23 @@ final class VoxelIngest {
 					}
 				}
 				int n = 16 >> l;
-				section.writeBatch(
-					baseCell(cx, l), baseCell(sy, l), baseCell(cz, l),
-					n, n, n,
-					pyramid.level(l), 0, n, n * n);
+				try {
+					section.writeBatch(
+						baseCell(cx, l), baseCell(sy, l), baseCell(cz, l),
+						n, n, n,
+						pyramid.level(l), 0, n, n * n);
+				} catch (NullPointerException recycled) {
+					// The section was recycled by a concurrent HOT->WARM pack in the
+					// narrow window between our lock-free acquire and this write (its
+					// cell array is nulled under the section monitor, so the write hits
+					// a null array). Its data is already safe in WARM, so drop just
+					// this one level's write and keep ingesting the rest of the chunk
+					// — a whole-chunk abort here would strand every other section of
+					// the snapshot. Self-heals on the next capture of this section. A
+					// coordinate bug would raise ArrayIndexOutOfBounds instead and
+					// still surface loudly through the worker wrapper.
+					continue;
+				}
 				section.markColumnPopulated(columnCoord(cx, l), columnCoord(cz, l));
 				store.markDirty(key);
 				touched.add(key);

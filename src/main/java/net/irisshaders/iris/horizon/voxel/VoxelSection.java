@@ -270,6 +270,21 @@ public final class VoxelSection {
 	}
 
 	/**
+	 * Atomic snapshot of the cells AND the population mask under one monitor
+	 * hold, returning the {@code dataVersion} the pair represents. The M2 save
+	 * framing needs cells, mask and (via {@link VoxelSectionCodec#countNonAir})
+	 * census all drawn from the same instant, so a persisted row can never
+	 * describe a different cell array than its payload. {@code dstMask} must be at
+	 * least {@link #populationMaskLength()} longs.
+	 */
+	public synchronized int copyCellsAndMaskInto(long[] dstCells, long[] dstMask) {
+		System.arraycopy(cells, 0, dstCells, 0, VoxelConstants.SECTION_CELLS);
+		System.arraycopy(populationMask, 0, dstMask, 0, populationMask.length);
+		lastTouchedNanos = System.nanoTime();
+		return dataVersion;
+	}
+
+	/**
 	 * Copies one 32x32 boundary plane of this section into {@code dst}
 	 * (length {@link VoxelConstants#SECTION_PLANE_CELLS}) and returns the
 	 * dataVersion of the copy. DESIGN.md contract addition (c): the mesher

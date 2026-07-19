@@ -246,16 +246,40 @@ public final class VoxelEngine {
 		blockUpdateQueueSize.set(0);
 		blockUpdateDropLogged = false;
 		remipArmedUntilTick = 0;
-		// flushAll saves the palette (first) and every dirty section, then drops
-		// both tiers. The shared palette is NOT cleared here: it is world-scoped
-		// and kept across dimension switches; it is cleared and reloaded only
-		// when the world id actually changes (ensureWorld). flushAll saves to the
-		// store's own captured palette path, so a later worldId-change clear
-		// cannot corrupt this world's file.
+		// The shared palette is NOT cleared here: it is world-scoped and kept
+		// across dimension switches; it is cleared and reloaded only when the
+		// world id actually changes (ensureWorld).
 		if (s != null) {
+			// Flush the palette SYNCHRONOUSLY on the client thread, before this
+			// method returns and hence before any later ensureWorld() can
+			// clear()+load() the shared, mutable palette for a different world.
+			// Deferring this to the worker (as the section flush is) would let a
+			// world switch that runs first write the NEW world's palette content
+			// into THIS world's palette.nbt — silent cross-world corruption. The
+			// async section flush below never reads palette content (ids are baked
+			// into cells already), so only the palette save must run here.
+			try {
+				s.flushPalette();
+			} catch (Throwable t) {
+				Iris.logger.error("Horizon: voxel unload palette flush failed", t);
+			}
 			worker.submit(() -> {
 				try {
-					s.flushAll();
+					// Gate against any still-in-flight periodic save/evict cycle on
+					// this same store: flushAll drains the shared dirty set and clears
+					// both tiers plus the region monitors, none of which may run while
+					// a cycle is packing/recycling sections. No NEW cycle can start
+					// (store is already null, so onClientTick no longer schedules one),
+					// so this only waits out the current cycle, then takes the latch
+					// itself and releases it when done.
+					while (!cycleInFlight.compareAndSet(false, true)) {
+						java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
+					}
+					try {
+						s.flushAll();
+					} finally {
+						cycleInFlight.set(false);
+					}
 				} catch (Throwable t) {
 					Iris.logger.error("Horizon: voxel unload flush failed", t);
 				}

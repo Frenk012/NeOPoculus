@@ -70,8 +70,14 @@ final class VoxelStore {
 	 * A HOT section is not packed to WARM until it has been quiet this long
 	 * (2 s). Ingest of one chunk takes 1-3 ms and every acquire bumps the
 	 * section's touch clock, so this margin makes "packed while a worker still
-	 * writes it" effectively impossible; the monitor-nulled recycle covers the
-	 * remaining pathological stall without corruption.
+	 * writes it" very rare — but not impossible: the ingest fast path acquires a
+	 * resident HOT section lock-free (no region monitor), so a pack pass that
+	 * already selected the section by its old touch clock can still recycle it in
+	 * the narrow window before the caller's write. The monitor-nulled recycle
+	 * keeps that safe from corruption (the late write hits a null array and fails
+	 * fast with an NPE rather than clobbering a pooled array), and
+	 * {@code VoxelIngest} isolates that NPE per section so one recycled section
+	 * never aborts the rest of the chunk's ingest.
 	 */
 	private static final long PACK_QUIESCE_NANOS = 2_000_000_000L;
 
@@ -366,9 +372,18 @@ final class VoxelStore {
 			if (s == null) {
 				continue;
 			}
-			int version = s.copyCellsInto(scratch);
-			int nonAir = s.nonAirCount();
 			int level = SectionKey.level(key);
+			long[] mask = new long[VoxelSection.populationMaskLongs(level)];
+			// Snapshot cells AND population mask under ONE section-monitor hold,
+			// and derive the census from that same snapshot, so the framed
+			// nonAirCount / mask can never disagree with the encoded payload. Reading
+			// nonAirCount() (or the mask) in a separate monitor acquisition could
+			// catch a concurrent writeBatch's newer census against the older cell
+			// snapshot and, on a crash after commit, persist a row whose census/mask
+			// describe a different array than its payload (a false-empty or a stale
+			// census the mesher would mistrust the frontier for).
+			int version = s.copyCellsAndMaskInto(scratch, mask);
+			int nonAir = VoxelSectionCodec.countNonAir(scratch);
 			int rx = SectionKey.x(key) >> VoxelConstants.STORAGE_REGION_BITS;
 			int rz = SectionKey.z(key) >> VoxelConstants.STORAGE_REGION_BITS;
 			RegionBatch batch = batches.computeIfAbsent(regionKeyOf(key), r -> new RegionBatch(level, rx, rz));
@@ -376,8 +391,6 @@ final class VoxelStore {
 				batch.rows.add(VoxelRegionStorage.DirtyRow.removal(key));
 				batch.pending.add(new Pending(key, s, version, true));
 			} else {
-				long[] mask = new long[s.populationMaskLength()];
-				s.copyPopulationMaskInto(mask);
 				byte[] payload = VoxelSectionCodec.encodeCells(scratch);
 				batch.rows.add(new VoxelRegionStorage.DirtyRow(key, nonAir, mask, payload));
 				batch.pending.add(new Pending(key, s, version, false));
@@ -566,16 +579,29 @@ final class VoxelStore {
 	// --- Unload flush --------------------------------------------------------
 
 	/**
-	 * Level-unload teardown: palette-first flush, then save every dirty HOT
-	 * section (double-retry, like {@code HorizonLod.onLevelUnload}), then drop
-	 * both tiers. Arrays are not recycled here — at unload in-flight ingest jobs
-	 * may still hold section references anywhere, and handing their arrays to
-	 * the pool could let a straggler write corrupt an unrelated section; dropping
-	 * the object graph to GC is unconditionally safe (mirrors
-	 * {@code VoxelWorld.clearAll}). Worker thread.
+	 * Palette-only flush. {@code VoxelEngine.onLevelUnload} calls this
+	 * synchronously on the client thread so the SHARED palette is durably written
+	 * to THIS store's captured path before a later world switch can clear()+load()
+	 * it for a different world. Kept out of {@link #flushAll} (which runs on a
+	 * worker, after a possible world switch) precisely so the async path can never
+	 * read the mutated palette and write another world's mapping into this file.
+	 */
+	void flushPalette() {
+		savePalette();
+	}
+
+	/**
+	 * Level-unload teardown: save every dirty HOT section (double-retry, like
+	 * {@code HorizonLod.onLevelUnload}), then drop both tiers. The palette is
+	 * flushed FIRST and separately by {@link #flushPalette} on the client thread
+	 * (see its javadoc), so this method deliberately does not touch it — thus the
+	 * palette-first invariant still holds cycle-wide. Arrays are not recycled here
+	 * — at unload in-flight ingest jobs may still hold section references
+	 * anywhere, and handing their arrays to the pool could let a straggler write
+	 * corrupt an unrelated section; dropping the object graph to GC is
+	 * unconditionally safe (mirrors {@code VoxelWorld.clearAll}). Worker thread.
 	 */
 	void flushAll() {
-		savePalette();
 		long[] scratch = new long[VoxelConstants.SECTION_CELLS];
 		flushDirtyWithRetry(scratch);
 		warm.clear();

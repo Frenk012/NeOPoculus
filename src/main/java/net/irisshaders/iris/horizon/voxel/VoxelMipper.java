@@ -33,13 +33,14 @@ final class VoxelMipper {
 	private static final long IDENTITY_MASK = VoxelConstants.STATE_MASK | VoxelConstants.BIOME_MASK;
 
 	/**
-	 * M2: the mipper faults through the store so an incremental remip can write
-	 * a parent cell into a section that was packed down to WARM (or evicted to
-	 * disk) since it was last meshed — otherwise a block edit's mip would be
-	 * silently dropped for any non-HOT parent. Child reads stay HOT-only:
-	 * remips are only ever enqueued for HOT children (bulk ingest writes all
-	 * levels directly and never enqueues), so a child that left HOT is stale by
-	 * definition and correctly skipped.
+	 * M2: the mipper faults through the store so an incremental remip can both
+	 * READ a child and WRITE a parent cell that was packed down to WARM (or
+	 * evicted to disk) since the edit was enqueued — otherwise a block edit's mip
+	 * would be silently dropped for any non-HOT child or parent, leaving the
+	 * distant LOD stale until a full chunk reload. A packed child still holds the
+	 * fresh saved edit, so it must be faulted back and propagated, not skipped;
+	 * only a child gone from every tier (re-ingested wholesale, all levels, on
+	 * re-approach) is correctly dropped.
 	 */
 	private final VoxelStore store;
 	private final VoxelPalettes palettes;
@@ -98,9 +99,10 @@ final class VoxelMipper {
 	 * whose cells actually changed — the caller forwards them to the mesh
 	 * dirty tracker exactly like {@code VoxelIngest.IngestResult} touches.
 	 *
-	 * <p>A child section evicted between enqueue and processing is simply
-	 * skipped: its whole subtree left residency and will be re-ingested
-	 * (bulk path, all levels) on re-approach, so nothing is stale.
+	 * <p>A child packed to WARM (or on disk) between enqueue and processing is
+	 * faulted back so its saved edit still reaches the parent; only a child gone
+	 * from every tier is skipped — its whole subtree left residency and will be
+	 * re-ingested (bulk path, all levels) on re-approach, so nothing is stale.
 	 */
 	LongSet processRemips(int maxSections) {
 		LongOpenHashSet touched = new LongOpenHashSet();
@@ -143,7 +145,14 @@ final class VoxelMipper {
 	 * a torch toggle from remipping four levels of stone.
 	 */
 	private void remipSection(long childKey, int[] cellIdxs, long[] children, LongOpenHashSet touched) {
-		VoxelSection child = store.hot().get(childKey);
+		// Acquire through the store, not a bare hot.get(): a child packed down to
+		// WARM (or evicted to disk) since its remip was enqueued still holds the
+		// fresh saved edit, and the parent LOD must incorporate it. acquireBlocking
+		// faults it back to HOT and touches it, so a concurrent pack pass will not
+		// treat it as quiesced and recycle it mid-read. A null return means the
+		// child is genuinely gone from HOT/WARM/disk, in which case its whole
+		// subtree re-ingests (all levels) on re-approach — nothing to propagate.
+		VoxelSection child = store.acquireBlocking(childKey);
 		if (child == null) {
 			return;
 		}

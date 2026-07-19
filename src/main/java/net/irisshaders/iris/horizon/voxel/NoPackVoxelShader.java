@@ -94,7 +94,14 @@ public final class NoPackVoxelShader {
 				vec2 uv = (slotXY + local) * u_slotScale;
 				vec2 gx = dFdx(cellUV) * u_slotScale;
 				vec2 gy = dFdy(cellUV) * u_slotScale;
-				base = textureGrad(u_atlas, uv, gx, gy).rgb;
+				vec4 tex = textureGrad(u_atlas, uv, gx, gy);
+				// Alpha cutout: cross/flat blocks (grass, lily pads, vines) and
+				// leaf holes have transparent texels — discard them so those
+				// blocks show their real silhouette instead of a solid cube.
+				if (tex.a < 0.5) {
+					discard;
+				}
+				base = tex.rgb;
 			}
 			float block = float((vLight >> 4u) & 15u) / 15.0;
 			float sky   = float(vLight & 15u) / 15.0;

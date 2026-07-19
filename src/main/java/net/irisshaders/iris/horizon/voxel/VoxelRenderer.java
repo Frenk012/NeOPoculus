@@ -147,8 +147,17 @@ public final class VoxelRenderer {
 		float fogStart = lodDist * 0.80f;
 		float fogEnd = lodDist;
 		float[] fogColor = RenderSystem.getShaderFogColor();
-		float skyFactor = mc.level.dimensionType().hasSkyLight()
-			? Math.max(0.2f, mc.level.getSkyDarken(1.0f) >= 4 ? 0.3f : 1.0f) : 1.0f;
+		// Day/night sky factor from the real sun angle (mirrors the classic
+		// engine): day ~1.0, night ~0.15. The old getSkyDarken test never fired,
+		// so the LOD stayed day-lit around the clock.
+		float skyFactor;
+		if (mc.level.dimensionType().hasSkyLight()) {
+			float f = mc.level.getTimeOfDay(1.0f);
+			float d = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.cos(f * 6.2831855f) * 2.0f + 0.5f, 0.0f, 1.0f);
+			skyFactor = 0.15f + d * 0.85f;
+		} else {
+			skyFactor = 0.75f;
+		}
 
 		mvp.set(projection).mul(modelView);
 		frustum.set(mvp);

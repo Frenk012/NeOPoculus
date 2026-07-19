@@ -39,6 +39,7 @@ public final class VoxelMesher {
 		int maxSy = SectionKey.blockToSection(worldMaxY - 1, level);
 		int cellSize = 1 << level;
 
+		VoxelDiag.buildInvoked.incrementAndGet();
 		SectionSnapshot snap = new SectionSnapshot();
 		long[] faceKey = new long[N * N];
 
@@ -126,6 +127,7 @@ public final class VoxelMesher {
 			throw t;
 		}
 
+		VoxelDiag.quadsEmitted.addAndGet(quads);
 		if (quads == 0) {
 			MemoryUtil.memFree(buf);
 			return null;

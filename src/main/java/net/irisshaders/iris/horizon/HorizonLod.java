@@ -340,6 +340,7 @@ public final class HorizonLod {
 			event.getLeft().add("Horizon/voxel render: meshes " + voxelRenderer.meshCount()
 				+ " drawn " + voxelRenderer.drawnLastFrame()
 				+ " built " + voxelRenderer.totalUploaded());
+			event.getLeft().add(net.irisshaders.iris.horizon.voxel.VoxelDiag.line());
 		}
 	}
 
@@ -408,6 +409,7 @@ public final class HorizonLod {
 								+ " region " + frx + "," + frz, t);
 						}
 					});
+					net.irisshaders.iris.horizon.voxel.VoxelDiag.submitted.incrementAndGet();
 					scheduled++;
 				}
 			}
@@ -421,7 +423,11 @@ public final class HorizonLod {
 			// Symmetric with the isActive() gate on the render side.
 			Minecraft mcv = Minecraft.getInstance();
 			voxelEngine.onClientTick(mcv);
-			scheduleVoxelMeshes(mcv);
+			try {
+				scheduleVoxelMeshes(mcv);
+			} catch (Throwable t) {
+				Iris.logger.error("Horizon: voxel mesh scheduling failed", t);
+			}
 			return;
 		}
 		if (!isActive()) {

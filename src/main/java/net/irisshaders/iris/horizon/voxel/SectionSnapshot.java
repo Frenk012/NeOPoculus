@@ -30,9 +30,14 @@ public final class SectionSnapshot {
 	public boolean capture(VoxelStore store, int level, int sx, int sy, int sz) {
 		long coreKey = SectionKey.pack(level, sx, sy, sz);
 		VoxelSection core = store.acquire(coreKey);
-		if (core == null || core.nonAirCount() == 0) {
+		if (core == null) {
+			VoxelDiag.acquireNull.incrementAndGet();
 			return false;
 		}
+		if (core.nonAirCount() == 0) {
+			return false;
+		}
+		VoxelDiag.sectionsCaptured.incrementAndGet();
 		java.util.Arrays.fill(cells, VoxelConstants.AIR_CELL);
 		coreNonAir = core.nonAirCount();
 		if (!fillCore(core)) {

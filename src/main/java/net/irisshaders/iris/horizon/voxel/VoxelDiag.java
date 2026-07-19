@@ -16,6 +16,7 @@ public final class VoxelDiag {
 	public static final AtomicLong sectionsCaptured = new AtomicLong();// snapshot.capture == true
 	public static final AtomicLong acquireNull = new AtomicLong();     // store.acquire returned null
 	public static final AtomicLong quadsEmitted = new AtomicLong();    // total quads written
+	public static final java.util.concurrent.atomic.AtomicBoolean loggedProbe = new java.util.concurrent.atomic.AtomicBoolean();
 
 	public static String line() {
 		return "voxel diag: sub " + submitted.get()

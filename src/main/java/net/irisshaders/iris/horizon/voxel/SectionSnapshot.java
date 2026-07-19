@@ -31,6 +31,12 @@ public final class SectionSnapshot {
 		long coreKey = SectionKey.pack(level, sx, sy, sz);
 		VoxelSection core = store.acquire(coreKey);
 		if (core == null) {
+			if (VoxelDiag.loggedProbe.compareAndSet(false, true)) {
+				long sample = store.hot().sampleKey();
+				net.irisshaders.iris.Iris.logger.info("VOXDIAG mesh probe " + SectionKey.describe(coreKey)
+					+ " -> null; hot total=" + store.hot().totalSections()
+					+ " sample=" + (sample == Long.MIN_VALUE ? "none" : SectionKey.describe(sample)));
+			}
 			VoxelDiag.acquireNull.incrementAndGet();
 			return false;
 		}

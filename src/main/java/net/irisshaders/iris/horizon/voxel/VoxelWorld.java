@@ -93,6 +93,12 @@ public final class VoxelWorld {
 	 * (that ordering is additionally serialized by {@code VoxelStore}'s
 	 * per-storage-region monitor; this method is the last line of defence).
 	 */
+	/** Debug (M3): any resident key, or Long.MIN_VALUE if empty. */
+	public long sampleKey() {
+		var it = sections.keySet().iterator();
+		return it.hasNext() ? it.next() : Long.MIN_VALUE;
+	}
+
 	VoxelSection installResident(VoxelSection section) {
 		VoxelSection prev = sections.putIfAbsent(section.key, section);
 		if (prev != null) {

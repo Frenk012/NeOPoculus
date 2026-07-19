@@ -2,7 +2,15 @@ package net.irisshaders.iris.horizon;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.irisshaders.iris.Iris;
+import net.irisshaders.iris.horizon.voxel.VoxelColorTable;
+import net.irisshaders.iris.horizon.voxel.VoxelConstants;
 import net.irisshaders.iris.horizon.voxel.VoxelEngine;
+import net.irisshaders.iris.horizon.voxel.VoxelLodSelector;
+import net.irisshaders.iris.horizon.voxel.VoxelMesher;
+import net.irisshaders.iris.horizon.voxel.VoxelPalettes;
+import net.irisshaders.iris.horizon.voxel.VoxelRegionKey;
+import net.irisshaders.iris.horizon.voxel.VoxelRenderer;
+import net.irisshaders.iris.horizon.voxel.VoxelStore;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -48,6 +56,12 @@ public final class HorizonLod {
 	 * Declared after the worker field: initializers run in order.
 	 */
 	private final VoxelEngine voxelEngine = new VoxelEngine(worker);
+	/** Render-thread owner of the voxel LOD meshes (M3). Renders when engine=voxel. */
+	private final VoxelRenderer voxelRenderer = new VoxelRenderer();
+	/** Flat MapColor per state id for the M3 voxel path (replaced by the atlas in M4). */
+	private final VoxelColorTable voxelColorTable = new VoxelColorTable(voxelEngine.palettes());
+	/** Bounded voxel mesh builds queued per client tick. */
+	private static final int MAX_VOXEL_SCHEDULED_PER_TICK = 32;
 
 	private volatile LodWorld world;
 	private volatile LodStorage storage;
@@ -122,6 +136,7 @@ public final class HorizonLod {
 		emptyRenderRegions.clear();
 		dirtyRenderRegions.clear();
 		RenderSystem.recordRenderCall(renderer::clear);
+		RenderSystem.recordRenderCall(voxelRenderer::clear);
 		voxelEngine.onConfigChanged();
 	}
 
@@ -132,11 +147,28 @@ public final class HorizonLod {
 	 */
 	public void onPipelineDestroyed(Object pipeline) {
 		renderer.onPipelineDestroyed(pipeline);
+		voxelRenderer.onPipelineDestroyed(pipeline);
 	}
 
-	/** Extends the projection far plane so LOD terrain is not clipped. */
+	/**
+	 * True when either engine is actively drawing extended terrain this frame.
+	 * The classic {@link #isActive()} is false in voxel mode by design, so the
+	 * far-plane extension must consult the voxel engine separately or distant
+	 * voxel LOD gets clipped away.
+	 */
+	private boolean renderingExtended() {
+		if (!HorizonConfig.get().isEnabled()) {
+			return false;
+		}
+		if (HorizonConfig.get().isVoxelEngine()) {
+			return voxelEngine.store() != null;
+		}
+		return isActive();
+	}
+
+	/** Extends the projection far plane so LOD terrain (classic or voxel) is not clipped. */
 	public float extendFarPlane(float vanillaFarPlane) {
-		if (!isActive()) {
+		if (!renderingExtended()) {
 			return vanillaFarPlane;
 		}
 		return Math.max(vanillaFarPlane, HorizonConfig.get().getLodDistanceBlocks() * 1.6f);
@@ -298,6 +330,7 @@ public final class HorizonLod {
 			});
 		}
 		RenderSystem.recordRenderCall(renderer::clear);
+		RenderSystem.recordRenderCall(voxelRenderer::clear);
 	}
 
 	/** F3 overlay: the voxel engine's per-level section counters (M1 acceptance line). */
@@ -307,12 +340,85 @@ public final class HorizonLod {
 		}
 	}
 
+	/**
+	 * Client-thread voxel mesh scheduler (M3): sweeps each LOD level's region
+	 * grid within its ring annulus and submits build jobs for regions that
+	 * belong to that level and are not yet meshed. Mirrors the classic
+	 * scheduleMeshes but per level. Bounded per tick so huge distances never
+	 * stall the client thread.
+	 */
+	private void scheduleVoxelMeshes(Minecraft mc) {
+		VoxelStore store = voxelEngine.store();
+		ClientLevel level = mc.level;
+		if (store == null || level == null || mc.player == null) {
+			return;
+		}
+		final double camX = mc.player.getX();
+		final double camZ = mc.player.getZ();
+		RenderSystem.recordRenderCall(() -> voxelRenderer.evict(camX, camZ));
+
+		final int worldMinY = level.getMinBuildHeight();
+		final int worldMaxY = level.getMaxBuildHeight();
+		final VoxelColorTable colors = voxelColorTable;
+		final VoxelPalettes palettes = voxelEngine.palettes();
+		int rdBlocks = VoxelLodSelector.renderDistanceBlocks();
+		int lodDist = HorizonConfig.get().getLodDistanceBlocks();
+
+		int scheduled = 0;
+		for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL && scheduled < MAX_VOXEL_SCHEDULED_PER_TICK; lvl++) {
+			int span = VoxelRegionKey.regionSpanBlocks(lvl);
+			int radius = VoxelLodSelector.radiusRegions(lvl);
+			if (lvl == 0) {
+				// Ensure the collar (which levelFor forces to L0 out to rd+256)
+				// is fully swept even when it exceeds L0's own ring.
+				radius = Math.max(radius, (rdBlocks + 256) / span + 2);
+			}
+			int camRx = Math.floorDiv((int) Math.floor(camX), span);
+			int camRz = Math.floorDiv((int) Math.floor(camZ), span);
+			for (int dz = -radius; dz <= radius && scheduled < MAX_VOXEL_SCHEDULED_PER_TICK; dz++) {
+				for (int dx = -radius; dx <= radius && scheduled < MAX_VOXEL_SCHEDULED_PER_TICK; dx++) {
+					int rx = camRx + dx;
+					int rz = camRz + dz;
+					double ccx = (rx + 0.5) * span - camX;
+					double ccz = (rz + 0.5) * span - camZ;
+					double dist = Math.sqrt(ccx * ccx + ccz * ccz);
+					if (dist > lodDist + span) {
+						continue;
+					}
+					if (VoxelLodSelector.levelFor(dist, rdBlocks) != lvl) {
+						continue; // a coarser/finer level owns this region
+					}
+					final long key = VoxelRegionKey.pack(lvl, rx, rz);
+					if (voxelRenderer.hasMesh(key) || !voxelRenderer.markScheduled(key)) {
+						continue;
+					}
+					final int frx = rx, frz = rz, flvl = lvl, fmin = worldMinY, fmax = worldMaxY;
+					final int jobEpoch = voxelRenderer.currentEpoch();
+					worker.submit(() -> {
+						try {
+							VoxelMesher.MeshData data = VoxelMesher.buildRegion(store, colors, palettes,
+								flvl, frx, frz, key, fmin, fmax);
+							voxelRenderer.submit(key, data, jobEpoch);
+						} catch (Throwable t) {
+							voxelRenderer.submit(key, null, jobEpoch);
+							Iris.logger.error("Horizon: voxel mesh build failed for L" + flvl
+								+ " region " + frx + "," + frz, t);
+						}
+					});
+					scheduled++;
+				}
+			}
+		}
+	}
+
 	private void onClientTick(ClientTickEvent.Post event) {
 		if (HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine()) {
 			// Voxel path: the classic scheduler below must not run (it would
 			// capture, mesh and save 2.5D data alongside the voxel engine).
 			// Symmetric with the isActive() gate on the render side.
-			voxelEngine.onClientTick(Minecraft.getInstance());
+			Minecraft mcv = Minecraft.getInstance();
+			voxelEngine.onClientTick(mcv);
+			scheduleVoxelMeshes(mcv);
 			return;
 		}
 		if (!isActive()) {
@@ -531,6 +637,12 @@ public final class HorizonLod {
 	 * terrain layer with the frame's matrices.
 	 */
 	public void render(Matrix4f modelView, Matrix4f projection) {
+		if (HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine()) {
+			if (voxelEngine.store() != null) {
+				voxelRenderer.render(modelView, projection);
+			}
+			return;
+		}
 		if (!isActive()) {
 			return;
 		}

@@ -65,7 +65,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * in-flight flag, so at most one {@link #runSaveAndEvictCycle} / {@link #flushAll}
  * is in motion; the region monitors handle the residual ingest-vs-cycle overlap.
  */
-final class VoxelStore {
+public final class VoxelStore {
 	/**
 	 * A HOT section is not packed to WARM until it has been quiet this long
 	 * (2 s). Ingest of one chunk takes 1-3 ms and every acquire bumps the

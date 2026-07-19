@@ -25,6 +25,8 @@ public final class VoxelConstants {
 	// --- Cell bit layout (64-bit; DESIGN.md section 3, resolution R1) ---
 	// bits 0-19 stateId (0 = air), 20-28 biomeId (0 = plains fallback),
 	// 29-32 block light, 33-36 sky light, 37-63 reserved-zero in v4.
+	/** A fully-zero cell: state id 0 (air), no biome/light. {@link VoxelCell#isAir} matches it. */
+	public static final long AIR_CELL = 0L;
 	public static final int STATE_BITS = 20;
 	public static final int BIOME_BITS = 9;
 	public static final long STATE_MASK = (1L << STATE_BITS) - 1;
@@ -92,6 +94,20 @@ public final class VoxelConstants {
 
 	// --- Storage format ---
 	public static final int STORAGE_VERSION = 4;
+
+	// --- Meshing / rendering (design-mesh-render.md section 0) ---
+	/** Draw region = MESH_REGION_SECTIONS^2 sections in XZ, full height in Y. */
+	public static final int REGION_SECTIONS_XZ = MESH_REGION_SECTIONS;
+	/** Cells across a region in X or Z: 4 sections x 32 cells. */
+	public static final int REGION_CELLS_XZ = MESH_REGION_SECTIONS * SECTION_SIZE;
+	/** Greedy-quad size cap (cells) on both axes, matching the classic mesher's merge discipline. */
+	public static final int MERGE_CAP = 16;
+	/** Added to world Y before packing into the u16 vertex position (keeps it non-negative). */
+	public static final int Y_BIAS = 512;
+	/** Vertex format v2 stride, bytes (LodVertexFormatV2). */
+	public static final int VERTEX_STRIDE = 24;
+	/** Hard per-region quad emit cap; overflow is logged once and truncated. */
+	public static final int MAX_QUADS_PER_REGION = 131_072;
 
 	// --- Two-tier residency (VoxelStore, design-data-storage.md section 5.2) ---
 	/**

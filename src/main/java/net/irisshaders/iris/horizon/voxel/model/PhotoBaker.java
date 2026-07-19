@@ -4,11 +4,15 @@ import com.mojang.blaze3d.platform.NativeImage;
 import net.irisshaders.iris.mixin.texture.SpriteContentsAccessor;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.Direction;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
+import net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions;
 
 import java.util.List;
 
@@ -41,13 +45,12 @@ public final class PhotoBaker {
 		try {
 			Minecraft mc = Minecraft.getInstance();
 			BakedModel model = mc.getBlockRenderer().getBlockModel(state);
-			if (model == mc.getModelManager().getMissingModel()) {
-				return null;
-			}
 			Direction dir = FACE_DIR[face];
-			BakedQuad quad = pickQuad(model, state, dir);
+			BakedQuad quad = model == mc.getModelManager().getMissingModel() ? null : pickQuad(model, state, dir);
 			if (quad == null) {
-				return null;
+				// Fluids (water/lava) render with no baked model — bake their
+				// still texture from the fluid client extensions instead.
+				return bakeFluid(mc, state);
 			}
 			TextureAtlasSprite sprite = quad.getSprite();
 			NativeImage image = ((SpriteContentsAccessor) sprite.contents()).getOriginalImage();
@@ -60,6 +63,37 @@ public final class PhotoBaker {
 			if (quad.isTinted()) {
 				applyTint(photo, tintColor(mc, state, quad.getTintIndex()));
 			}
+			return photo;
+		} catch (Throwable t) {
+			return null;
+		}
+	}
+
+	/** Bakes a fluid's still texture (water/lava have no baked model), tinted so water reads blue. */
+	private static int[] bakeFluid(Minecraft mc, BlockState state) {
+		FluidState fluid = state.getFluidState();
+		if (fluid.isEmpty()) {
+			return null;
+		}
+		try {
+			IClientFluidTypeExtensions ext = IClientFluidTypeExtensions.of(fluid);
+			ResourceLocation still = ext.getStillTexture();
+			if (still == null) {
+				return null;
+			}
+			TextureAtlasSprite sprite = mc.getTextureAtlas(TextureAtlas.LOCATION_BLOCKS).apply(still);
+			NativeImage image = ((SpriteContentsAccessor) sprite.contents()).getOriginalImage();
+			int[] photo = downsample(image, sprite.contents().width(), sprite.contents().height());
+			if (photo == null) {
+				return null;
+			}
+			// The still texture is greyscale; the tint colors it. getTintColor is
+			// often white (biome-driven), so fall back to the plains water color.
+			int tint = ext.getTintColor() & 0xFFFFFF;
+			if (tint == 0xFFFFFF) {
+				tint = 0x3F76E4; // plains water
+			}
+			applyTint(photo, tint);
 			return photo;
 		} catch (Throwable t) {
 			return null;

@@ -17,6 +17,7 @@
     "MixinByteBufferBuilder",
     "MixinChainedJsonException",
     "MixinClientLanguage",
+    "MixinClientLevel_Horizon",
     "MixinClientPacketListener",
     "MixinDebugScreenOverlay",
     "MixinEntityRenderDispatcher",

@@ -2,6 +2,7 @@ package net.irisshaders.iris.horizon;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.irisshaders.iris.Iris;
+import net.irisshaders.iris.horizon.voxel.VoxelEngine;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -38,6 +39,15 @@ public final class HorizonLod {
 			t.setPriority(Thread.MIN_PRIORITY + 1);
 			return t;
 		});
+
+	/**
+	 * The voxel-engine orchestrator (docs/horizon-voxel/DESIGN.md), sharing
+	 * the worker pool above per the unified design's thread model. Behind
+	 * HorizonConfig.isVoxelEngine() the event handlers below delegate to it
+	 * and the whole classic pipeline (capture, mesh, save, render) parks.
+	 * Declared after the worker field: initializers run in order.
+	 */
+	private final VoxelEngine voxelEngine = new VoxelEngine(worker);
 
 	private volatile LodWorld world;
 	private volatile LodStorage storage;
@@ -80,11 +90,24 @@ public final class HorizonLod {
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, LevelEvent.Unload.class, INSTANCE::onLevelUnload);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ClientTickEvent.Post.class, INSTANCE::onClientTick);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, net.neoforged.neoforge.client.event.ViewportEvent.RenderFog.class, INSTANCE::onRenderFog);
+		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, net.neoforged.neoforge.client.event.CustomizeGuiOverlayEvent.DebugText.class, INSTANCE::onDebugText);
 		Iris.logger.info("Horizon extended LOD system initialized");
+	}
+
+	/** Voxel-engine orchestrator; the block-update mixin and the GUI reach it here. */
+	public VoxelEngine voxel() {
+		return voxelEngine;
 	}
 
 	public boolean isActive() {
 		if (!HorizonConfig.get().isEnabled() || world == null) {
+			return false;
+		}
+		// In voxel mode the classic engine is fully parked — no capture, no
+		// meshing, no rendering, no fog/far-plane overrides — even if a
+		// classic world was created before the engine toggle flipped. This
+		// gate is the render-side twin of the delegation in the handlers.
+		if (HorizonConfig.get().isVoxelEngine()) {
 			return false;
 		}
 		return HorizonConfig.get().shouldRenderWithShaders() || Iris.getCurrentPack().isEmpty();
@@ -99,6 +122,7 @@ public final class HorizonLod {
 		emptyRenderRegions.clear();
 		dirtyRenderRegions.clear();
 		RenderSystem.recordRenderCall(renderer::clear);
+		voxelEngine.onConfigChanged();
 	}
 
 	/**
@@ -146,13 +170,21 @@ public final class HorizonLod {
 		if (!(event.getLevel() instanceof ClientLevel level) || !(event.getChunk() instanceof LevelChunk chunk)) {
 			return;
 		}
+		if (HorizonConfig.get().isVoxelEngine()) {
+			voxelEngine.onChunkLoad(level, chunk);
+			return;
+		}
 		ensureWorld(level);
 		captureQueue.add(new CaptureTask(chunk, false));
 	}
 
 	private void onChunkUnload(ChunkEvent.Unload event) {
 		if (!HorizonConfig.get().isEnabled()) return;
-		if (!(event.getLevel() instanceof ClientLevel) || !(event.getChunk() instanceof LevelChunk chunk)) {
+		if (!(event.getLevel() instanceof ClientLevel level) || !(event.getChunk() instanceof LevelChunk chunk)) {
+			return;
+		}
+		if (HorizonConfig.get().isVoxelEngine()) {
+			voxelEngine.onChunkUnload(level, chunk);
 			return;
 		}
 		// Final snapshot: catches any block changes made while loaded. The
@@ -239,6 +271,9 @@ public final class HorizonLod {
 		if (!(event.getLevel() instanceof ClientLevel)) {
 			return;
 		}
+		// Always reset the voxel side too: harmless when it never ran, and
+		// the engine toggle may have flipped mid-session.
+		voxelEngine.onLevelUnload();
 		LodWorld w = world;
 		LodStorage s = storage;
 		world = null;
@@ -265,7 +300,21 @@ public final class HorizonLod {
 		RenderSystem.recordRenderCall(renderer::clear);
 	}
 
+	/** F3 overlay: the voxel engine's per-level section counters (M1 acceptance line). */
+	private void onDebugText(net.neoforged.neoforge.client.event.CustomizeGuiOverlayEvent.DebugText event) {
+		if (HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine()) {
+			voxelEngine.addDebugText(event.getLeft());
+		}
+	}
+
 	private void onClientTick(ClientTickEvent.Post event) {
+		if (HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine()) {
+			// Voxel path: the classic scheduler below must not run (it would
+			// capture, mesh and save 2.5D data alongside the voxel engine).
+			// Symmetric with the isActive() gate on the render side.
+			voxelEngine.onClientTick(Minecraft.getInstance());
+			return;
+		}
 		if (!isActive()) {
 			return;
 		}

@@ -14,6 +14,10 @@ public final class VoxelConstants {
 	/** Cells per axis of a section; a level-N section spans 32 * 2^N blocks. */
 	public static final int SECTION_SIZE = 1 << SECTION_BITS;
 	public static final int SECTION_CELLS = SECTION_SIZE * SECTION_SIZE * SECTION_SIZE;
+	/** Local-coordinate mask: {@code coord & SECTION_MASK} = position within a section. */
+	public static final int SECTION_MASK = SECTION_SIZE - 1;
+	/** Cells in one 32x32 boundary plane ({@code VoxelSection.copyPlaneInto} buffers). */
+	public static final int SECTION_PLANE_CELLS = SECTION_SIZE * SECTION_SIZE;
 	/** LOD mip levels 0..4; L0 is one block per cell. */
 	public static final int MAX_LEVEL = 4;
 	public static final int LEVEL_COUNT = MAX_LEVEL + 1;
@@ -28,8 +32,49 @@ public final class VoxelConstants {
 	public static final long BIOME_MASK = ((1L << BIOME_BITS) - 1) << BIOME_SHIFT;
 	public static final int LIGHT_SHIFT = BIOME_SHIFT + BIOME_BITS;
 	public static final long LIGHT_MASK = 0xFFL << LIGHT_SHIFT;
+	/** Block-light nibble; the combined 8-bit light field starts here (== LIGHT_SHIFT). */
+	public static final int BLOCK_LIGHT_SHIFT = LIGHT_SHIFT;
+	/** Sky-light nibble: the high half of the 8-bit light field. */
+	public static final int SKY_LIGHT_SHIFT = LIGHT_SHIFT + 4;
 	public static final int MAX_STATE_IDS = 1 << STATE_BITS;
 	public static final int MAX_BIOME_IDS = 1 << BIOME_BITS;
+
+	// --- SectionKey bit layout (64-bit; DESIGN.md section 3) ---
+	// bits 0-25 x (biased +2^25), 26-51 z (same bias), 52-59 y (biased +128),
+	// 60-63 level. The bias keeps every field non-negative so packing is mask
+	// + shift and unpacking is mask + subtract; with level <= 4 bit 63 stays
+	// clear, so packed keys are always non-negative longs.
+	public static final int KEY_XZ_BITS = 26;
+	public static final long KEY_XZ_MASK = (1L << KEY_XZ_BITS) - 1;
+	/** Added to signed section x/z before packing: range +/-2^25 sections. */
+	public static final int KEY_XZ_BIAS = 1 << (KEY_XZ_BITS - 1);
+	public static final int KEY_Y_BITS = 8;
+	public static final long KEY_Y_MASK = (1L << KEY_Y_BITS) - 1;
+	/** Added to signed section y: range [-128,128) sections, i.e. world Y down to -4096 at L0. */
+	public static final int KEY_Y_BIAS = 1 << (KEY_Y_BITS - 1);
+	public static final int KEY_Z_SHIFT = KEY_XZ_BITS;
+	public static final int KEY_Y_SHIFT = 2 * KEY_XZ_BITS;
+	public static final int KEY_LEVEL_SHIFT = KEY_Y_SHIFT + KEY_Y_BITS;
+
+	// --- Face indices, DH normal order (DESIGN.md contract addition (d)) ---
+	// Shared by VoxelSection.copyPlaneInto, the mesher and the shader-side
+	// u_faceAxes orientation table; the order is load-bearing and must never
+	// change.
+	public static final int FACE_NEG_Y = 0;
+	public static final int FACE_POS_Y = 1;
+	public static final int FACE_NEG_Z = 2;
+	public static final int FACE_POS_Z = 3;
+	public static final int FACE_NEG_X = 4;
+	public static final int FACE_POS_X = 5;
+	public static final int FACE_COUNT = 6;
+
+	// --- Ingestion / mip propagation ---
+	/** Biome quarts (4x4x4 grid, one per 4x4x4 blocks) in a vanilla 16^3 section. */
+	public static final int QUARTS_PER_VANILLA_SECTION = 64;
+	/** Ticks a section's pending remips/light refresh sit before a worker pass runs. */
+	public static final int MIP_DEBOUNCE_TICKS = 5;
+	/** Dirty-section budget per VoxelMipper.processRemips worker pass. */
+	public static final int MAX_REMIP_SECTIONS_PER_PASS = 64;
 
 	// --- Region granularities (resolution R5: never say bare "region") ---
 	/** Storage regions: 8x8 sections per .hlod v4 file. */

@@ -33,6 +33,18 @@ public final class VoxelRenderer {
 	private final FrustumIntersection frustum = new FrustumIntersection();
 	private final float[] mvpArray = new float[16];
 
+	// Diagnostics surfaced on the F3 line.
+	private volatile int drawnLastFrame;
+	private volatile long totalUploaded;
+
+	public int drawnLastFrame() {
+		return drawnLastFrame;
+	}
+
+	public long totalUploaded() {
+		return totalUploaded;
+	}
+
 	public int currentEpoch() {
 		return epoch;
 	}
@@ -76,6 +88,11 @@ public final class VoxelRenderer {
 			if (old != null) {
 				old.delete();
 			}
+			if (totalUploaded == 0) {
+				Iris.logger.info("Horizon: first voxel mesh uploaded (L" + data.level()
+					+ " " + data.quads() + " quads); voxel render path is live");
+			}
+			totalUploaded++;
 			inFlight.remove(key);
 			data.free();
 		}
@@ -115,7 +132,6 @@ public final class VoxelRenderer {
 		double camZ = cam.getPosition().z;
 
 		int lodDist = HorizonConfig.get().getLodDistanceBlocks();
-		int rdBlocks = VoxelLodSelector.renderDistanceBlocks();
 		float fogStart = lodDist * 0.80f;
 		float fogEnd = lodDist;
 		float[] fogColor = RenderSystem.getShaderFogColor();
@@ -146,6 +162,7 @@ public final class VoxelRenderer {
 		double maxDist = lodDist + 192.0;
 		double maxDistSq = maxDist * maxDist;
 		float relY = (float) -camY;
+		int drawn = 0;
 
 		for (VoxelRegionMesh mesh : meshes.values()) {
 			int level = mesh.level;
@@ -158,12 +175,9 @@ public final class VoxelRenderer {
 			if (centerDistSq > maxDistSq) {
 				continue;
 			}
-			double centerDist = Math.sqrt(centerDistSq);
-			double halfDiag = span * 0.7071;
-			// Fully inside the loaded render distance: real terrain covers it.
-			if (centerDist + halfDiag < rdBlocks) {
-				continue;
-			}
+			// No coverage cull in M3: LOD under loaded chunks is occluded by
+			// real terrain via the depth test + polygon offset, and drawing it
+			// everywhere keeps the seam at the render-distance edge visible.
 			float ox = (float) (originX - camX);
 			float oz = (float) (originZ - camZ);
 			if (!frustum.testAab(ox, mesh.minY + relY, oz, ox + span, mesh.maxY + relY, oz + span)) {
@@ -171,7 +185,9 @@ public final class VoxelRenderer {
 			}
 			shader.setOffset(ox, relY - VoxelConstants.Y_BIAS, oz);
 			mesh.draw();
+			drawn++;
 		}
+		drawnLastFrame = drawn;
 
 		GL33C.glPolygonOffset(0.0f, 0.0f);
 		GL33C.glDisable(GL33C.GL_POLYGON_OFFSET_FILL);

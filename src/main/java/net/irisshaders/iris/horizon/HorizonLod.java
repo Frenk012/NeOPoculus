@@ -337,6 +337,9 @@ public final class HorizonLod {
 	private void onDebugText(net.neoforged.neoforge.client.event.CustomizeGuiOverlayEvent.DebugText event) {
 		if (HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine()) {
 			voxelEngine.addDebugText(event.getLeft());
+			event.getLeft().add("Horizon/voxel render: meshes " + voxelRenderer.meshCount()
+				+ " drawn " + voxelRenderer.drawnLastFrame()
+				+ " built " + voxelRenderer.totalUploaded());
 		}
 	}
 

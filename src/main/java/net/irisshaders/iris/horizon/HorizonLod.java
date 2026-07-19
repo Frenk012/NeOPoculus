@@ -58,8 +58,14 @@ public final class HorizonLod {
 	private final VoxelEngine voxelEngine = new VoxelEngine(worker);
 	/** Render-thread owner of the voxel LOD meshes (M3). Renders when engine=voxel. */
 	private final VoxelRenderer voxelRenderer = new VoxelRenderer();
-	/** Flat MapColor per state id for the M3 voxel path (replaced by the atlas in M4). */
+	/** Flat MapColor per state id — the fallback while a block's photo bake is pending (M4). */
 	private final VoxelColorTable voxelColorTable = new VoxelColorTable(voxelEngine.palettes());
+	/** Photo-atlas bakery: renders each block face into the atlas the voxel LOD samples (M4). */
+	private final net.irisshaders.iris.horizon.voxel.model.VoxelBakery voxelBakery = new net.irisshaders.iris.horizon.voxel.model.VoxelBakery();
+	/** Bakery epoch seen at the last schedule pass; re-mesh fallback regions when it advances. */
+	private int lastBakeEpoch;
+	/** Bakes uploaded to the atlas per frame (render thread). */
+	private static final int MAX_VOXEL_BAKES_PER_FRAME = 8;
 	/** Bounded voxel mesh builds queued per client tick. */
 	private static final int MAX_VOXEL_SCHEDULED_PER_TICK = 32;
 	/** Voxel regions a build found empty (unexplored/all-air); skipped until a chunk loads there. */
@@ -113,6 +119,15 @@ public final class HorizonLod {
 	/** Voxel-engine orchestrator; the block-update mixin and the GUI reach it here. */
 	public VoxelEngine voxel() {
 		return voxelEngine;
+	}
+
+	/** Resource pack reload: drop the photo atlas + flat-color cache and re-mesh so textures re-bake. */
+	public void onResourceReload() {
+		voxelColorTable.clear();
+		RenderSystem.recordRenderCall(() -> {
+			voxelBakery.clear();
+			voxelRenderer.clear();
+		});
 	}
 
 	public boolean isActive() {
@@ -394,6 +409,19 @@ public final class HorizonLod {
 				submitVoxelBuild(store, colors, palettes, key, worldMinY, worldMaxY, scheduled);
 			}
 		}
+
+		// New photo bakes landed → re-mesh the regions still showing flat
+		// fallback color so they pick up the real textures.
+		int bakeEpoch = voxelBakery.epoch();
+		if (bakeEpoch != lastBakeEpoch) {
+			lastBakeEpoch = bakeEpoch;
+			for (long key : voxelRenderer.fallbackRegions()) {
+				if (scheduled[0] >= MAX_VOXEL_SCHEDULED_PER_TICK) {
+					break;
+				}
+				submitVoxelBuild(store, colors, palettes, key, worldMinY, worldMaxY, scheduled);
+			}
+		}
 		for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL && scheduled[0] < MAX_VOXEL_SCHEDULED_PER_TICK; lvl++) {
 			int span = VoxelRegionKey.regionSpanBlocks(lvl);
 			int radius = VoxelLodSelector.radiusRegions(lvl);
@@ -473,7 +501,7 @@ public final class HorizonLod {
 		final int jobEpoch = voxelRenderer.currentEpoch();
 		worker.submit(() -> {
 			try {
-				VoxelMesher.MeshData data = VoxelMesher.buildRegion(store, colors, palettes,
+				VoxelMesher.MeshData data = VoxelMesher.buildRegion(store, colors, palettes, voxelBakery,
 					lvl, rx, rz, key, fmin, fmax);
 				if (data == null) {
 					// No data here (unexplored / all-air). Remember it so the
@@ -723,7 +751,8 @@ public final class HorizonLod {
 	public void render(Matrix4f modelView, Matrix4f projection) {
 		if (HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine()) {
 			if (voxelEngine.store() != null) {
-				voxelRenderer.render(modelView, projection);
+				voxelBakery.process(MAX_VOXEL_BAKES_PER_FRAME, voxelEngine.palettes());
+				voxelRenderer.render(modelView, projection, voxelBakery);
 			}
 			return;
 		}

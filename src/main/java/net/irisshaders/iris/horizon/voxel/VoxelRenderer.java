@@ -27,6 +27,8 @@ public final class VoxelRenderer {
 	private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 	private volatile int epoch;
 	private final Object epochLock = new Object();
+	/** Regions whose current mesh used a flat-color fallback (unbaked state); re-meshed when bakes land. */
+	private final Set<Long> fallbackRegions = ConcurrentHashMap.newKeySet();
 
 	private final NoPackVoxelShader shader = new NoPackVoxelShader();
 	private final Matrix4f mvp = new Matrix4f();
@@ -69,6 +71,11 @@ public final class VoxelRenderer {
 		return meshes.containsKey(regionKey);
 	}
 
+	/** Snapshot of regions still showing flat fallback color; the scheduler re-meshes them after new bakes. */
+	public java.util.List<Long> fallbackRegions() {
+		return new java.util.ArrayList<>(fallbackRegions);
+	}
+
 	public int meshCount() {
 		return meshes.size();
 	}
@@ -96,9 +103,15 @@ public final class VoxelRenderer {
 		VoxelMesher.MeshData data;
 		while (budget-- > 0 && (data = uploadQueue.poll()) != null) {
 			long key = data.regionKey();
-			VoxelRegionMesh old = meshes.put(key, new VoxelRegionMesh(data));
+			VoxelRegionMesh mesh = new VoxelRegionMesh(data);
+			VoxelRegionMesh old = meshes.put(key, mesh);
 			if (old != null) {
 				old.delete();
+			}
+			if (mesh.usedFallback) {
+				fallbackRegions.add(key);
+			} else {
+				fallbackRegions.remove(key);
 			}
 			if (totalUploaded == 0) {
 				Iris.logger.info("Horizon: voxel render path live (first mesh L" + data.level()
@@ -128,8 +141,8 @@ public final class VoxelRenderer {
 		}
 	}
 
-	/** Render thread. Draws every visible region mesh in one flat-color pass. */
-	public void render(Matrix4f modelView, Matrix4f projection) {
+	/** Render thread. Draws every visible region mesh, sampling the photo atlas (flat color where unbaked). */
+	public void render(Matrix4f modelView, Matrix4f projection, net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery) {
 		processUploads(HorizonConfig.get().getMaxUploadsPerFrame());
 		if (meshes.isEmpty() || !shader.ensure()) {
 			return;
@@ -186,10 +199,18 @@ public final class VoxelRenderer {
 
 		GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
+		int prevTex1 = 0;
+		if (bakery.atlasTexture() != 0) {
+			GL33C.glActiveTexture(GL33C.GL_TEXTURE1);
+			prevTex1 = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
+			GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, bakery.atlasTexture());
+			GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
+		}
 		shader.bind();
 		shader.setFrame(mvpArray, fogColor, fogStart, fogEnd, skyFactor);
 		shader.setMask(0, (float) (camX / 16.0 - maskOriginX), (float) (camZ / 16.0 - maskOriginZ), MASK_SIZE);
 		shader.setUseMask(true);
+		shader.setAtlas(1, bakery.atlasSlotsPerRow(), 16.0f / bakery.atlasSize());
 
 		double maxDist = lodDist + 192.0;
 		double maxDistSq = maxDist * maxDist;
@@ -213,6 +234,7 @@ public final class VoxelRenderer {
 				continue;
 			}
 			shader.setOffset(ox, relY - VoxelConstants.Y_BIAS, oz);
+			shader.setCellSize(1 << level);
 			mesh.draw();
 			drawn++;
 		}
@@ -226,6 +248,11 @@ public final class VoxelRenderer {
 		if (prevBlend) {
 			GL33C.glEnable(GL33C.GL_BLEND);
 		}
+		if (bakery.atlasTexture() != 0) {
+			GL33C.glActiveTexture(GL33C.GL_TEXTURE1);
+			GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prevTex1);
+		}
+		GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prevTex0);
 		GL33C.glActiveTexture(prevActiveTex);
 		GL33C.glBindVertexArray(prevVao);
@@ -348,6 +375,7 @@ public final class VoxelRenderer {
 			}
 			inFlight.clear();
 		}
+		fallbackRegions.clear();
 		for (VoxelRegionMesh mesh : meshes.values()) {
 			mesh.delete();
 		}

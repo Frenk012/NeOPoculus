@@ -106,7 +106,12 @@ public class Iris {
 			if (FMLLoader.getDist().isClient()) {
 				modEventBus.addListener((net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent event) ->
 					event.registerReloadListener((net.minecraft.server.packs.resources.ResourceManagerReloadListener)
-						resourceManager -> net.irisshaders.iris.horizon.LodColors.clearCache()));
+						resourceManager -> {
+							net.irisshaders.iris.horizon.LodColors.clearCache();
+							// Block textures changed: drop the voxel photo atlas + flat
+							// color cache so they re-bake from the new resources.
+							net.irisshaders.iris.horizon.HorizonLod.INSTANCE.onResourceReload();
+						}));
 			}
 
 			IRIS_VERSION = ModList.get().getModContainerById(MODID).get().getModInfo().getVersion().toString();

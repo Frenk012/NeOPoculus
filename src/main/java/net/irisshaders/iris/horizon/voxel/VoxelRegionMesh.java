@@ -14,6 +14,8 @@ public final class VoxelRegionMesh {
 	public final int quads;
 	public final float minY;
 	public final float maxY;
+	/** True if any face used the flat-color fallback (an unbaked state); the renderer re-meshes it when bakes land. */
+	public final boolean usedFallback;
 	private int vao;
 	private int vbo;
 
@@ -23,6 +25,7 @@ public final class VoxelRegionMesh {
 		this.quads = data.quads();
 		this.minY = data.minY();
 		this.maxY = data.maxY();
+		this.usedFallback = data.usedFallback();
 
 		vao = GL33C.glGenVertexArrays();
 		vbo = GL33C.glGenBuffers();
@@ -39,6 +42,9 @@ public final class VoxelRegionMesh {
 		// attr2: uvec4 irisExtra (material, normal/face, 0, 0)
 		GL33C.glEnableVertexAttribArray(2);
 		GL33C.glVertexAttribIPointer(2, 4, GL33C.GL_UNSIGNED_BYTE, stride, LodVertexFormatV2.EXTRA_OFFSET);
+		// attr3: uvec2 (atlasSlot, biomeId) — the textured no-pack path (M4).
+		GL33C.glEnableVertexAttribArray(3);
+		GL33C.glVertexAttribIPointer(3, 2, GL33C.GL_UNSIGNED_SHORT, stride, LodVertexFormatV2.ATLAS_SLOT_OFFSET);
 		// Bind the shared quad index buffer into this VAO.
 		GL33C.glBindBuffer(GL33C.GL_ELEMENT_ARRAY_BUFFER, SharedQuadIndexBuffer.get());
 		GL33C.glBindVertexArray(0);

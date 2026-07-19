@@ -15,18 +15,23 @@ public final class NoPackVoxelShader {
 		in uvec4 aPosLight;   // x, y(+bias), z, lightMeta
 		in vec4  aColor;
 		in uvec4 aExtra;      // material, face, 0, 0
+		in uvec2 aTexInfo;    // atlasSlot, biomeId
 		uniform mat4 u_mvp;
 		uniform vec3 u_offset;
 		out vec4 vColor;
 		out vec3 vRelPos;
+		out vec3 vLocalPos;
 		flat out uint vFace;
 		flat out uint vLight;
+		flat out uint vSlot;
 		void main() {
-			vec3 rel = vec3(aPosLight.xyz) + u_offset;
+			vLocalPos = vec3(aPosLight.xyz);   // region-local blocks, y biased
+			vec3 rel = vLocalPos + u_offset;
 			vRelPos = rel;
 			vColor = aColor;
 			vFace = aExtra.y;
 			vLight = aPosLight.w;
+			vSlot = aTexInfo.x;
 			gl_Position = u_mvp * vec4(rel, 1.0);
 		}
 		""";
@@ -35,8 +40,10 @@ public final class NoPackVoxelShader {
 		#version 150 core
 		in vec4 vColor;
 		in vec3 vRelPos;
+		in vec3 vLocalPos;
 		flat in uint vFace;
 		flat in uint vLight;
+		flat in uint vSlot;
 		uniform vec4 u_fogColor;
 		uniform float u_fogStart;
 		uniform float u_fogEnd;
@@ -45,6 +52,10 @@ public final class NoPackVoxelShader {
 		uniform vec2 u_maskRel;
 		uniform float u_maskTexels;
 		uniform int u_useMask;
+		uniform sampler2D u_atlas;
+		uniform float u_cellSize;
+		uniform float u_slotsPerRow;
+		uniform float u_slotScale;
 		out vec4 fragColor;
 		const float faceShade[6] = float[6](0.5, 1.0, 0.8, 0.8, 0.6, 0.6);
 		void main() {
@@ -63,13 +74,34 @@ public final class NoPackVoxelShader {
 					discard;
 				}
 			}
+			// Base color: sample the block's baked photo, or fall back to the
+			// flat MapColor (vColor) for a state whose bake has not landed yet.
+			vec3 base;
+			if (vSlot == 0u) {
+				base = vColor.rgb;
+			} else {
+				vec2 plane;
+				if (vFace < 2u) {
+					plane = vLocalPos.xz;        // +/-Y top/bottom
+				} else if (vFace < 4u) {
+					plane = vLocalPos.xy;        // +/-Z
+				} else {
+					plane = vLocalPos.zy;        // +/-X
+				}
+				vec2 cellUV = plane / u_cellSize;
+				vec2 local = fract(cellUV);
+				vec2 slotXY = vec2(mod(float(vSlot), u_slotsPerRow), floor(float(vSlot) / u_slotsPerRow));
+				vec2 uv = (slotXY + local) * u_slotScale;
+				vec2 gx = dFdx(cellUV) * u_slotScale;
+				vec2 gy = dFdy(cellUV) * u_slotScale;
+				base = textureGrad(u_atlas, uv, gx, gy).rgb;
+			}
 			float block = float((vLight >> 4u) & 15u) / 15.0;
 			float sky   = float(vLight & 15u) / 15.0;
 			// Ambient floor of 0.2 so shadowed sides and cave mouths read as
-			// dark grey instead of pure black (the flat M3 color has no ambient
-			// occlusion to soften them); day/night contrast is preserved above.
+			// dark grey instead of pure black; day/night contrast preserved above.
 			float l = 0.2 + 0.8 * max(block, sky * u_skyFactor);
-			vec3 rgb = vColor.rgb * l * faceShade[vFace];
+			vec3 rgb = base * l * faceShade[vFace];
 			float f = clamp((length(vRelPos.xz) - u_fogStart) / (u_fogEnd - u_fogStart), 0.0, 1.0);
 			fragColor = vec4(mix(rgb, u_fogColor.rgb, f), 1.0);
 		}
@@ -79,6 +111,7 @@ public final class NoPackVoxelShader {
 	private boolean failed;
 	private int uMvp, uOffset, uFogColor, uFogStart, uFogEnd, uSkyFactor;
 	private int uChunkMask, uMaskRel, uMaskTexels, uUseMask;
+	private int uAtlas, uCellSize, uSlotsPerRow, uSlotScale;
 
 	/** @return true if the program is ready to bind. Render thread. */
 	public boolean ensure() {
@@ -97,6 +130,7 @@ public final class NoPackVoxelShader {
 			GL33C.glBindAttribLocation(program, 0, "aPosLight");
 			GL33C.glBindAttribLocation(program, 1, "aColor");
 			GL33C.glBindAttribLocation(program, 2, "aExtra");
+			GL33C.glBindAttribLocation(program, 3, "aTexInfo");
 			GL33C.glLinkProgram(program);
 			if (GL33C.glGetProgrami(program, GL33C.GL_LINK_STATUS) == GL33C.GL_FALSE) {
 				throw new IllegalStateException("link: " + GL33C.glGetProgramInfoLog(program));
@@ -113,6 +147,10 @@ public final class NoPackVoxelShader {
 			uMaskRel = GL33C.glGetUniformLocation(program, "u_maskRel");
 			uMaskTexels = GL33C.glGetUniformLocation(program, "u_maskTexels");
 			uUseMask = GL33C.glGetUniformLocation(program, "u_useMask");
+			uAtlas = GL33C.glGetUniformLocation(program, "u_atlas");
+			uCellSize = GL33C.glGetUniformLocation(program, "u_cellSize");
+			uSlotsPerRow = GL33C.glGetUniformLocation(program, "u_slotsPerRow");
+			uSlotScale = GL33C.glGetUniformLocation(program, "u_slotScale");
 			return true;
 		} catch (Exception e) {
 			failed = true;
@@ -146,6 +184,18 @@ public final class NoPackVoxelShader {
 
 	public void setUseMask(boolean use) {
 		GL33C.glUniform1i(uUseMask, use ? 1 : 0);
+	}
+
+	/** Photo atlas on texture unit {@code atlasUnit}; {@code slotScale} = 16/atlasSize. */
+	public void setAtlas(int atlasUnit, float slotsPerRow, float slotScale) {
+		GL33C.glUniform1i(uAtlas, atlasUnit);
+		GL33C.glUniform1f(uSlotsPerRow, slotsPerRow);
+		GL33C.glUniform1f(uSlotScale, slotScale);
+	}
+
+	/** Blocks per cell for the current draw (1 << level) — drives per-cell UV tiling. */
+	public void setCellSize(float cellSize) {
+		GL33C.glUniform1f(uCellSize, cellSize);
 	}
 
 	private static int compile(int type, String src) {

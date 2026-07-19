@@ -26,7 +26,8 @@ public final class VoxelMesher {
 	private static final long LIGHT_MASK = VoxelConstants.LIGHT_MASK;
 	private static final int MAX_BYTES = VoxelConstants.MAX_QUADS_PER_REGION * 4 * LodVertexFormatV2.STRIDE;
 
-	public record MeshData(long regionKey, int level, ByteBuffer vertexData, int quads, float minY, float maxY) {
+	public record MeshData(long regionKey, int level, ByteBuffer vertexData, int quads, float minY, float maxY,
+						   boolean usedFallback) {
 		public void free() {
 			MemoryUtil.memFree(vertexData);
 		}
@@ -34,6 +35,7 @@ public final class VoxelMesher {
 
 	/** @return the region mesh, or null when the whole region is empty. */
 	public static MeshData buildRegion(VoxelStore store, VoxelColorTable colors, VoxelPalettes palettes,
+									   net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery,
 									   int level, int rx, int rz, long regionKey, int worldMinY, int worldMaxY) {
 		int minSy = SectionKey.blockToSection(worldMinY, level);
 		int maxSy = SectionKey.blockToSection(worldMaxY - 1, level);
@@ -47,6 +49,8 @@ public final class VoxelMesher {
 		int quads = 0;
 		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
 		boolean capped = false;
+		boolean[] usedFallback = {false};
+		var metadata = bakery.metadata();
 
 		try {
 			for (int sxLocal = 0; sxLocal < VoxelConstants.MESH_REGION_SECTIONS && !capped; sxLocal++) {
@@ -98,8 +102,16 @@ public final class VoxelMesher {
 											}
 											buf = grown;
 										}
-										float[] yspan = emitQuad(buf, colors, key, faceLight[v * N + u], face, w, u, v, su, sv,
-											sxLocal, szLocal, sy, cellSize);
+										int state = VoxelCell.stateId(key);
+										int slot = metadata.slotOf(state, face);
+										if (slot == 0 && !metadata.isBaked(state)) {
+											bakery.requestBake(state);
+										}
+										if (slot == 0) {
+											usedFallback[0] = true;
+										}
+										float[] yspan = emitQuad(buf, colors, key, faceLight[v * N + u], slot,
+											face, w, u, v, su, sv, sxLocal, szLocal, sy, cellSize);
 										minY = Math.min(minY, yspan[0]);
 										maxY = Math.max(maxY, yspan[1]);
 										quads++;
@@ -133,7 +145,7 @@ public final class VoxelMesher {
 		}
 		buf.limit(buf.position());
 		buf.position(0);
-		return new MeshData(regionKey, level, buf, quads, minY, maxY);
+		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0]);
 	}
 
 	private static ByteBuffer maybeGrow(ByteBuffer buf) {
@@ -219,7 +231,7 @@ public final class VoxelMesher {
 	 * turned into region-local block X/Z and biased world Y. Returns
 	 * {@code [minY, maxY]} of the emitted vertices (world-space, un-biased).
 	 */
-	private static float[] emitQuad(ByteBuffer buf, VoxelColorTable colors, long key, int lightMeta,
+	private static float[] emitQuad(ByteBuffer buf, VoxelColorTable colors, long key, int lightMeta, int atlasSlot,
 									int face, int w, int u, int v, int su, int sv,
 									int sxLocal, int szLocal, int sy, int cellSize) {
 		int state = VoxelCell.stateId(key);
@@ -256,7 +268,7 @@ public final class VoxelMesher {
 			minY = Math.min(minY, worldY);
 			maxY = Math.max(maxY, worldY);
 			LodVertexFormatV2.writeVertex(buf, rlx, posY, rlz, lightMeta, rgb,
-				0 /*material*/, face, 0 /*atlasSlot*/, biome, face /*faceMeta*/, 0 /*flags*/);
+				0 /*material*/, face, atlasSlot, biome, face /*faceMeta*/, 0 /*flags*/);
 		}
 		return new float[]{minY, maxY};
 	}

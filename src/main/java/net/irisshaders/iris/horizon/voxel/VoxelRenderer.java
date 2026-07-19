@@ -262,16 +262,12 @@ public final class VoxelRenderer {
 				}
 			}
 		}
-		if (totalUploaded < 3 || (maskCenterX & 15) == 0) {
-			int covered = 0;
-			for (byte b : maskData) {
-				if (b != 0) {
-					covered++;
-				}
-			}
-			Iris.logger.info("VOXDIAG mask rebuild: " + covered + " chunks covered (rd=" + rdChunks
-				+ ", origin " + maskOriginX + "," + maskOriginZ + ")");
-		}
+		// Erode the covered region by one chunk: a chunk discards LOD only if it
+		// and its four orthogonal neighbours are all loaded. This lets the LOD
+		// extend one chunk INTO the loaded area (hidden there by the depth test)
+		// instead of stopping at the loaded edge, which left a one-chunk hole
+		// between real terrain and LOD.
+		erodeMask();
 		maskBuffer.clear();
 		maskBuffer.put(maskData).flip();
 
@@ -306,6 +302,26 @@ public final class VoxelRenderer {
 		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_PIXELS, prevSkipPixels);
 		GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, prevAlignment);
 		GL33C.glBindBuffer(GL33C.GL_PIXEL_UNPACK_BUFFER, prevUnpackBuffer);
+	}
+
+	/** Erodes {@link #maskData} by one chunk (4-neighbourhood): interior stays covered, the boundary ring clears. */
+	private void erodeMask() {
+		// Scan interior cells; a covered cell with any uncovered orthogonal
+		// neighbour is cleared. Uses maskBuffer's backing as scratch would alias
+		// maskData, so read from a snapshot of the covered bits first.
+		byte[] src = maskData.clone();
+		for (int j = 1; j < MASK_SIZE - 1; j++) {
+			for (int i = 1; i < MASK_SIZE - 1; i++) {
+				int idx = i + j * MASK_SIZE;
+				if (src[idx] == 0) {
+					continue;
+				}
+				if (src[idx - 1] == 0 || src[idx + 1] == 0
+					|| src[idx - MASK_SIZE] == 0 || src[idx + MASK_SIZE] == 0) {
+					maskData[idx] = 0;
+				}
+			}
+		}
 	}
 
 	/** Render thread: pipeline destroy hook (no per-pipeline GL held in M3; kept for symmetry). */

@@ -41,6 +41,7 @@ public final class VoxelMesher {
 
 		SectionSnapshot snap = new SectionSnapshot();
 		long[] faceKey = new long[N * N];
+		int[] faceLight = new int[N * N];
 
 		ByteBuffer buf = MemoryUtil.memAlloc(1 << 21); // 2 MB, grows on demand
 		int quads = 0;
@@ -58,7 +59,7 @@ public final class VoxelMesher {
 						}
 						for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
 							for (int w = 0; w < N; w++) {
-								if (!buildLayer(snap, palettes, face, w, faceKey)) {
+								if (!buildLayer(snap, palettes, face, w, faceKey, faceLight)) {
 									continue;
 								}
 								// Greedy-merge this layer's faceKey grid into quads.
@@ -97,7 +98,7 @@ public final class VoxelMesher {
 											}
 											buf = grown;
 										}
-										float[] yspan = emitQuad(buf, colors, key, face, w, u, v, su, sv,
+										float[] yspan = emitQuad(buf, colors, key, faceLight[v * N + u], face, w, u, v, su, sv,
 											sxLocal, szLocal, sy, cellSize);
 										minY = Math.min(minY, yspan[0]);
 										maxY = Math.max(maxY, yspan[1]);
@@ -156,7 +157,8 @@ public final class VoxelMesher {
 	 * biome from the solid cell, light from the adjacent cell). Returns false
 	 * (skip the layer) when nothing is visible.
 	 */
-	private static boolean buildLayer(SectionSnapshot snap, VoxelPalettes palettes, int face, int w, long[] faceKey) {
+	private static boolean buildLayer(SectionSnapshot snap, VoxelPalettes palettes, int face, int w,
+									  long[] faceKey, int[] faceLight) {
 		int sign = (face & 1) == 0 ? -1 : 1; // faces 0,2,4 negative; 1,3,5 positive
 		boolean any = false;
 		for (int v = 0; v < N; v++) {
@@ -171,12 +173,18 @@ public final class VoxelMesher {
 					faceKey[v * N + u] = 0;
 					continue;
 				}
-				// M3: merge on geometry+state+biome only (light excluded), so a
+				// Merge on geometry+state+biome only (light excluded), so a
 				// surface merges into large plates instead of fragmenting into
-				// one-cell strips wherever the adjacent cell's light varies.
-				// Proper per-face light is M5; until then the vertex writer uses
-				// a fixed bright light. A non-air cell always has a non-zero key.
+				// one-cell strips wherever the adjacent cell's light varies. The
+				// light is kept in a parallel array and the quad takes its
+				// origin cell's value — approximate across a merged plate but
+				// real (day/night, caves), unlike the old fixed-bright value.
 				faceKey[v * N + u] = c & ~LIGHT_MASK;
+				// Light from the adjacent (air/translucent) cell, vanilla-style;
+				// a missing-neighbour plane (AIR_CELL) falls back to the solid
+				// cell's own light so frontier faces are not pitch black.
+				long lightSource = VoxelCell.isAir(n) && (n & VoxelConstants.LIGHT_MASK) == 0 ? c : n;
+				faceLight[v * N + u] = (VoxelCell.blockLight(lightSource) << 4) | VoxelCell.skyLight(lightSource);
 				any = true;
 			}
 		}
@@ -205,15 +213,12 @@ public final class VoxelMesher {
 	 * turned into region-local block X/Z and biased world Y. Returns
 	 * {@code [minY, maxY]} of the emitted vertices (world-space, un-biased).
 	 */
-	private static float[] emitQuad(ByteBuffer buf, VoxelColorTable colors, long key,
+	private static float[] emitQuad(ByteBuffer buf, VoxelColorTable colors, long key, int lightMeta,
 									int face, int w, int u, int v, int su, int sv,
 									int sxLocal, int szLocal, int sy, int cellSize) {
 		int state = VoxelCell.stateId(key);
 		int rgb = colors.colorOf(state);
 		int biome = VoxelCell.biomeId(key);
-		// M3: fixed bright light (skylight 15) — the merge key drops light, so
-		// per-cell light is not available here. Real light is wired in M5.
-		int lightMeta = 0x0F;
 
 		// Corner cell coords per face (see class doc); cx/cz in 0..32 relative
 		// to the section, cy in 0..32 relative to the section.

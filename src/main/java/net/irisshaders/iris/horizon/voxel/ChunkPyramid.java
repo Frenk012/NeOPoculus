@@ -6,8 +6,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.PalettedContainer;
 
-import java.util.function.Consumer;
-
 /**
  * Worker-side scratch converting one vanilla 16^3 section of a
  * {@link ChunkSnapshotter.ChunkSnapshot} into a five-level mip pyramid of
@@ -44,7 +42,6 @@ final class ChunkPyramid {
 	private final int[] biomeIds = new int[VoxelConstants.QUARTS_PER_VANILLA_SECTION];
 	/** Reusable 8-child gather buffer for {@link VoxelMipper#selectRepresentative}. */
 	private final long[] children = new long[8];
-	private final Filler filler = new Filler();
 	private int nonAirCount;
 
 	private ChunkPyramid() {
@@ -91,9 +88,7 @@ final class ChunkPyramid {
 			nonAirCount = 0;
 		} else {
 			resolveBiomes(snapshot.biomes()[sectionIndex], palettes);
-			filler.reset(levels[0], biomeIds, palettes, block, sky, skyFallback);
-			states.getAll(filler);
-			nonAirCount = filler.nonAir;
+			nonAirCount = fillFromStates(states, block, sky, skyFallback, palettes);
 		}
 		mip(palettes);
 	}
@@ -118,6 +113,48 @@ final class ChunkPyramid {
 				biomeIds[i] = lastId;
 			}
 		}
+	}
+
+	/**
+	 * Fills P0 by reading every one of the 4096 cells from the vanilla
+	 * container. WHY not {@code PalettedContainer.getAll}: that enumerates the
+	 * palette's unique values (once per distinct block state), NOT the cells —
+	 * using it filled only the first few p0 entries with palette samples and
+	 * left the section almost entirely air. The {@code state == lastState} memo
+	 * keeps runs of identical blocks (the common case) off the palette map.
+	 *
+	 * @return non-air cell count.
+	 */
+	private int fillFromStates(PalettedContainer<BlockState> states, DataLayer block, DataLayer sky,
+							   int skyFallback, VoxelPalettes palettes) {
+		long[] p0 = levels[0];
+		int nonAir = 0;
+		BlockState lastState = null;
+		int lastId = 0;
+		for (int y = 0; y < 16; y++) {
+			for (int z = 0; z < 16; z++) {
+				int base = (y << 8) | (z << 4);
+				for (int x = 0; x < 16; x++) {
+					BlockState state = states.get(x, y, z);
+					int stateId;
+					if (state == lastState) {
+						stateId = lastId;
+					} else {
+						stateId = palettes.idFor(state);
+						lastState = state;
+						lastId = stateId;
+					}
+					int bl = block == null ? 0 : block.get(x, y, z);
+					int sl = sky == null ? skyFallback : sky.get(x, y, z);
+					int biome = biomeIds[((y >> 2) << 4) | ((z >> 2) << 2) | (x >> 2)];
+					p0[base | x] = VoxelCell.pack(stateId, biome, bl, sl);
+					if (stateId != 0) {
+						nonAir++;
+					}
+				}
+			}
+		}
+		return nonAir;
 	}
 
 	/** All-air P0: state 0, plains biome, light from the layers/heuristic. */
@@ -166,63 +203,4 @@ final class ChunkPyramid {
 		}
 	}
 
-	/**
-	 * P0 consumer for {@code PalettedContainer.getAll}: receives all 4096
-	 * block states in index order {@code (y<<8)|(z<<4)|x} and packs a cell
-	 * for each. A mutable named class (not a capturing lambda) so the one
-	 * instance and its memo can be reused across every section this worker
-	 * ever converts.
-	 */
-	private static final class Filler implements Consumer<BlockState> {
-		private long[] p0;
-		private int[] biomeIds;
-		private VoxelPalettes palettes;
-		private DataLayer block;
-		private DataLayer sky;
-		private int skyFallback;
-		private int index;
-		private BlockState lastState;
-		private int lastId;
-		int nonAir;
-
-		void reset(long[] p0, int[] biomeIds, VoxelPalettes palettes,
-				DataLayer block, DataLayer sky, int skyFallback) {
-			this.p0 = p0;
-			this.biomeIds = biomeIds;
-			this.palettes = palettes;
-			this.block = block;
-			this.sky = sky;
-			this.skyFallback = skyFallback;
-			this.index = 0;
-			this.lastState = null;
-			this.lastId = 0;
-			this.nonAir = 0;
-		}
-
-		@Override
-		public void accept(BlockState state) {
-			int idx = index++;
-			if (idx >= p0.length) {
-				return; // defensive: never overrun on an exotic container
-			}
-			int stateId;
-			if (state == lastState) {
-				stateId = lastId;
-			} else {
-				stateId = palettes.idFor(state);
-				lastState = state;
-				lastId = stateId;
-			}
-			int x = idx & 15;
-			int z = (idx >> 4) & 15;
-			int y = idx >> 8;
-			int bl = block == null ? 0 : block.get(x, y, z);
-			int sl = sky == null ? skyFallback : sky.get(x, y, z);
-			int biome = biomeIds[((y >> 2) << 4) | ((z >> 2) << 2) | (x >> 2)];
-			p0[idx] = VoxelCell.pack(stateId, biome, bl, sl);
-			if (stateId != 0) {
-				nonAir++;
-			}
-		}
-	}
 }

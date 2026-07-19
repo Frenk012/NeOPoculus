@@ -641,6 +641,32 @@ public final class LodRenderer {
 	}
 
 	/** Render-thread: frees all GPU resources (world unload). */
+	/**
+	 * Render-thread callback from IrisRenderingPipeline.destroy(). The
+	 * dh_terrain program and framebuffer cached here were built against
+	 * that pipeline; renderIris only frees them when a *replacement*
+	 * IrisRenderingPipeline shows up, so disabling shaders entirely would
+	 * leak them (and pin the destroyed pipeline) without this hook.
+	 */
+	public void onPipelineDestroyed(Object pipeline) {
+		if (irisPipeline != null && irisPipeline != pipeline) {
+			return;
+		}
+		if (irisProgram != null) {
+			irisProgram.free();
+			irisProgram = null;
+		}
+		if (irisFramebuffer != null) {
+			irisFramebuffer.destroy();
+			irisFramebuffer = null;
+		}
+		irisPipeline = null;
+		irisDepthTex = 0;
+		// A shader-path failure is specific to the pipeline that just died;
+		// give the next pack a fresh chance instead of legacy-only forever.
+		irisFailed = false;
+	}
+
 	public void clear() {
 		// Shader pack reloads can recycle FBO ids with a different draw-buffer
 		// layout; drop the cached layout so it is re-queried.

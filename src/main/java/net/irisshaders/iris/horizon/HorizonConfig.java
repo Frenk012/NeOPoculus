@@ -54,6 +54,27 @@ public class HorizonConfig {
 	 * shading; disable if a specific pack misbehaves.
 	 */
 	private boolean renderWithShaders = true;
+	/**
+	 * Which LOD engine drives the extended horizon. false = "classic", the
+	 * proven 2.5D color-extrusion renderer; true = "voxel", the experimental
+	 * textured voxel engine (docs/horizon-voxel/DESIGN.md). Applied on
+	 * world reload.
+	 */
+	private boolean voxelEngine = false;
+	/**
+	 * RAM budget for resident voxel sections (the WARM tier), in MiB.
+	 */
+	private int voxelMemoryBudgetMb = 256;
+	/**
+	 * VRAM ceiling for voxel LOD meshes + atlases, in MiB. When exceeded the
+	 * effective LOD distance is clamped down (logged once).
+	 */
+	private int maxLodVramMb = 512;
+	/**
+	 * Byte budget for voxel mesh uploads per frame, alongside the
+	 * maxUploadsPerFrame mesh-count budget.
+	 */
+	private int maxUploadBytesPerFrame = 8 * 1024 * 1024;
 
 	private HorizonConfig() {
 		load();
@@ -86,6 +107,10 @@ public class HorizonConfig {
 		saveIntervalSeconds = clamp(parseInt(props, "saveIntervalSeconds", saveIntervalSeconds), 10, 3600);
 		workerThreads = clamp(parseInt(props, "workerThreads", workerThreads), 1, 4);
 		renderWithShaders = Boolean.parseBoolean(props.getProperty("renderWithShaders", Boolean.toString(renderWithShaders)));
+		voxelEngine = "voxel".equalsIgnoreCase(props.getProperty("engine", voxelEngine ? "voxel" : "classic").trim());
+		voxelMemoryBudgetMb = clamp(parseInt(props, "voxelMemoryBudgetMb", voxelMemoryBudgetMb), 64, 2048);
+		maxLodVramMb = clamp(parseInt(props, "maxLodVramMb", maxLodVramMb), 128, 4096);
+		maxUploadBytesPerFrame = clamp(parseInt(props, "maxUploadBytesPerFrame", maxUploadBytesPerFrame), 1 << 20, 64 << 20);
 
 		if (!Files.exists(file)) {
 			save();
@@ -102,6 +127,10 @@ public class HorizonConfig {
 		props.setProperty("saveIntervalSeconds", Integer.toString(saveIntervalSeconds));
 		props.setProperty("workerThreads", Integer.toString(workerThreads));
 		props.setProperty("renderWithShaders", Boolean.toString(renderWithShaders));
+		props.setProperty("engine", voxelEngine ? "voxel" : "classic");
+		props.setProperty("voxelMemoryBudgetMb", Integer.toString(voxelMemoryBudgetMb));
+		props.setProperty("maxLodVramMb", Integer.toString(maxLodVramMb));
+		props.setProperty("maxUploadBytesPerFrame", Integer.toString(maxUploadBytesPerFrame));
 
 		try (OutputStream out = Files.newOutputStream(path())) {
 			props.store(out, "NeOculus Horizon extended LOD renderer settings");
@@ -193,5 +222,37 @@ public class HorizonConfig {
 
 	public boolean shouldRenderWithShaders() {
 		return renderWithShaders;
+	}
+
+	public boolean isVoxelEngine() {
+		return voxelEngine;
+	}
+
+	public void setVoxelEngine(boolean value) {
+		this.voxelEngine = value;
+	}
+
+	public int getVoxelMemoryBudgetMb() {
+		return voxelMemoryBudgetMb;
+	}
+
+	public void setVoxelMemoryBudgetMb(int value) {
+		this.voxelMemoryBudgetMb = clamp(value, 64, 2048);
+	}
+
+	public int getMaxLodVramMb() {
+		return maxLodVramMb;
+	}
+
+	public void setMaxLodVramMb(int value) {
+		this.maxLodVramMb = clamp(value, 128, 4096);
+	}
+
+	public int getMaxUploadBytesPerFrame() {
+		return maxUploadBytesPerFrame;
+	}
+
+	public void setMaxUploadBytesPerFrame(int value) {
+		this.maxUploadBytesPerFrame = clamp(value, 1 << 20, 64 << 20);
 	}
 }

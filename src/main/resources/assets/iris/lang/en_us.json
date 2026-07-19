@@ -32,6 +32,8 @@
   "options.iris.horizon": "Horizon LOD...",
   "options.iris.horizon.title": "Horizon LOD Settings",
   "options.iris.horizon.enabled": "Horizon LOD",
+  "options.iris.horizon.engine": "Voxel Engine (Experimental)",
+  "options.iris.horizon.engine.tooltip": "Use the experimental textured voxel LOD engine instead of the classic flat-color one. Distant terrain keeps real block textures and biome tint. Applied on world reload.",
   "options.iris.horizon.shaders": "Render With Shaders",
   "options.iris.horizon.distance": "LOD Distance",
   "options.iris.horizon.baseScale": "Base Detail",

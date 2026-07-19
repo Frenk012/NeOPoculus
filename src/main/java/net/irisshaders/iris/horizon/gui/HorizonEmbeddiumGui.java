@@ -48,6 +48,15 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.HIGH)
 			.build();
 
+		Option<Boolean> voxelEngine = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/engine"))
+			.setName(name("engine"))
+			.setTooltip(tooltip("engine"))
+			.setControl(TickBoxControl::new)
+			.setBinding(new GenericBinding<>(HorizonConfig::setVoxelEngine, HorizonConfig::isVoxelEngine))
+			.setImpact(OptionImpact.HIGH)
+			.build();
+
 		Option<Boolean> withShaders = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
 			.setId(id("horizon/shaders"))
 			.setName(name("shaders"))
@@ -114,6 +123,7 @@ public class HorizonEmbeddiumGui {
 		OptionGroup main = OptionGroup.createBuilder()
 			.setId(OptionIdentifier.create(id("horizon/main")))
 			.add(enabled)
+			.add(voxelEngine)
 			.add(withShaders)
 			.add(distance)
 			.build();

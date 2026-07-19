@@ -101,6 +101,15 @@ public final class HorizonLod {
 		RenderSystem.recordRenderCall(renderer::clear);
 	}
 
+	/**
+	 * Render-thread callback from IrisRenderingPipeline.destroy(): releases
+	 * the per-pipeline GL resources the LOD renderer caches (dh_terrain
+	 * program + framebuffer) and re-arms the shader path.
+	 */
+	public void onPipelineDestroyed(Object pipeline) {
+		renderer.onPipelineDestroyed(pipeline);
+	}
+
 	/** Extends the projection far plane so LOD terrain is not clipped. */
 	public float extendFarPlane(float vanillaFarPlane) {
 		if (!isActive()) {

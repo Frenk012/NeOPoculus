@@ -1278,6 +1278,11 @@ public class IrisRenderingPipeline implements WorldRenderingPipeline, ShaderRend
 
 		horizonRenderer.destroy();
 
+		// The Horizon LOD renderer caches a dh_terrain program + framebuffer
+		// built against this pipeline; it must drop them now or they leak
+		// when shaders are disabled rather than swapped.
+		net.irisshaders.iris.horizon.HorizonLod.INSTANCE.onPipelineDestroyed(this);
+
 		GlStateManager._glBindFramebuffer(GL30C.GL_READ_FRAMEBUFFER, 0);
 		GlStateManager._glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, 0);
 		GlStateManager._glBindFramebuffer(GL30C.GL_FRAMEBUFFER, 0);

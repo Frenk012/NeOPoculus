@@ -30,6 +30,13 @@ public class HorizonSettingsScreen extends OptionsSubScreen {
 				HorizonLod.INSTANCE.onConfigChanged();
 			});
 
+		OptionInstance<Boolean> voxelEngine = OptionInstance.createBoolean(
+			"options.iris.horizon.engine", config.isVoxelEngine(), value -> {
+				config.setVoxelEngine(value);
+				config.save();
+				HorizonLod.INSTANCE.onConfigChanged();
+			});
+
 		OptionInstance<Boolean> withShaders = OptionInstance.createBoolean(
 			"options.iris.horizon.shaders", config.shouldRenderWithShaders(), value -> {
 				config.setRenderWithShaders(value);
@@ -79,6 +86,6 @@ public class HorizonSettingsScreen extends OptionsSubScreen {
 				config.save();
 			});
 
-		this.list.addSmall(enabled, withShaders, distance, baseScale, ringWidth, uploads, saveInterval);
+		this.list.addSmall(enabled, voxelEngine, withShaders, distance, baseScale, ringWidth, uploads, saveInterval);
 	}
 }

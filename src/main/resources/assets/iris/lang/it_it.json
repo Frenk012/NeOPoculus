@@ -27,6 +27,8 @@
   "options.iris.horizon": "Horizon LOD...",
   "options.iris.horizon.title": "Impostazioni Horizon LOD",
   "options.iris.horizon.enabled": "Horizon LOD",
+  "options.iris.horizon.engine": "Motore Voxel (Sperimentale)",
+  "options.iris.horizon.engine.tooltip": "Usa il motore LOD voxel sperimentale con texture reali al posto di quello classico a colori piatti. Il terreno distante mantiene texture dei blocchi e tinta del bioma. Applicato al ricaricamento del mondo.",
   "options.iris.horizon.shaders": "Renderizza con le shader",
   "options.iris.horizon.distance": "Distanza LOD",
   "options.iris.horizon.baseScale": "Dettaglio base",

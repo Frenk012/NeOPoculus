@@ -173,7 +173,12 @@ public final class VoxelMesher {
 					faceKey[v * N + u] = 0;
 					continue;
 				}
-				faceKey[v * N + u] = (c & ~LIGHT_MASK) | (n & LIGHT_MASK);
+				// M3: merge on geometry+state+biome only (light excluded), so a
+				// surface merges into large plates instead of fragmenting into
+				// one-cell strips wherever the adjacent cell's light varies.
+				// Proper per-face light is M5; until then the vertex writer uses
+				// a fixed bright light. A non-air cell always has a non-zero key.
+				faceKey[v * N + u] = c & ~LIGHT_MASK;
 				any = true;
 			}
 		}
@@ -208,7 +213,9 @@ public final class VoxelMesher {
 		int state = VoxelCell.stateId(key);
 		int rgb = colors.colorOf(state);
 		int biome = VoxelCell.biomeId(key);
-		int lightMeta = (VoxelCell.blockLight(key) << 4) | VoxelCell.skyLight(key);
+		// M3: fixed bright light (skylight 15) — the merge key drops light, so
+		// per-cell light is not available here. Real light is wired in M5.
+		int lightMeta = 0x0F;
 
 		// Corner cell coords per face (see class doc); cx/cz in 0..32 relative
 		// to the section, cy in 0..32 relative to the section.

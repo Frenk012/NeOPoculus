@@ -2,7 +2,7 @@ All context loaded. Below is the implementation-ready design for the meshing / r
 
 ---
 
-# Horizon Voxel Engine â€” Meshing, Rendering, Shader Integration (baseline GL 4.1, no compute)
+# Horizon Voxel Engine — Meshing, Rendering, Shader Integration (baseline GL 4.1, no compute)
 
 Package: `net.irisshaders.iris.horizon.voxel` (new), cooperating with existing `net.irisshaders.iris.horizon.*`. All file paths relative to `C:\Users\franc\IdeaProjects\NeOPoculus\src\main\java\`.
 
@@ -26,13 +26,13 @@ public final class VoxelConstants {
 ```
 
 - Region **block** span at level L: `REGION_CELLS_XZ << L` = 128 / 256 / 512 / 1024 / 2048.
-- Vertical sections per region column (world height 384, y âˆˆ [âˆ’64, 320)): L0:12, L1:6, L2:3, L3:2, L4:1.
+- Vertical sections per region column (world height 384, y ∈ [−64, 320)): L0:12, L1:6, L2:3, L3:2, L4:1.
 - Region key (renderer map + scheduler): `VoxelRegionKey.pack(level, rx, rz)` = `((long)level << 58) | ((rz + (1<<28)) & 0x1FFF_FFFFL) << 29 | ((rx + (1<<28)) & 0x1FFF_FFFFL)`. Unpack helpers mirror `LodStorage.regionKey` style.
-- Cell payload (owned by the data slice, consumed here): 64-bit, bits 56â€“63 light (bits 56â€“59 sky, 60â€“63 block), 47â€“55 biome (9b), 27â€“46 blockstate (20b), 0â€“26 reserved-zero. **Merge/equality in the mesher uses the raw long.**
+- Cell payload (owned by the data slice, consumed here): 64-bit, bits 56–63 light (bits 56–59 sky, 60–63 block), 47–55 biome (9b), 27–46 blockstate (20b), 0–26 reserved-zero. **Merge/equality in the mesher uses the raw long.**
 
 ---
 
-## 1. Mesher â€” `VoxelMesher` + `SectionSnapshot`
+## 1. Mesher — `VoxelMesher` + `SectionSnapshot`
 
 ### 1.1 Section snapshot API (input contract, consumed from worker threads)
 
@@ -49,22 +49,22 @@ public final class SectionSnapshot {
 }
 ```
 
-Requirements on `VoxelWorld` (data slice): `copySectionInto(level,sx,sy,sz,long[] dst,int base,int strideY,int strideZ)` â€” a plain bulk copy, no lock held across the whole mesh job; torn reads during concurrent ingest are acceptable because ingest marks the section dirty and a remesh follows. Neighbor planes are pulled with the same call restricted to one boundary plane (32Ã—32Ã—8 B = 8 KB each). **Neighbor lookups cross region boundaries at the same level; they never consult other levels.**
+Requirements on `VoxelWorld` (data slice): `copySectionInto(level,sx,sy,sz,long[] dst,int base,int strideY,int strideZ)` — a plain bulk copy, no lock held across the whole mesh job; torn reads during concurrent ingest are acceptable because ingest marks the section dirty and a remesh follows. Neighbor planes are pulled with the same call restricted to one boundary plane (32×32×8 B = 8 KB each). **Neighbor lookups cross region boundaries at the same level; they never consult other levels.**
 
-**Missing-neighbor policy: treat as AIR (emit the face).** Consequences: (a) the loading frontier shows temporary walls that disappear on remesh when the neighbor arrives (data slice must dirty-notify the 6 adjacent sections' regions on section-create); (b) at *cross-level* region boundaries the neighbor is never resident at this level, so a full boundary wall is emitted automatically â€” this is the seam skirt (see Â§4), by construction, no special code.
+**Missing-neighbor policy: treat as AIR (emit the face).** Consequences: (a) the loading frontier shows temporary walls that disappear on remesh when the neighbor arrives (data slice must dirty-notify the 6 adjacent sections' regions on section-create); (b) at *cross-level* region boundaries the neighbor is never resident at this level, so a full boundary wall is emitted automatically — this is the seam skirt (see §4), by construction, no special code.
 
 ### 1.2 Greedy scanline (per face direction)
 
 For each of the 6 face directions `d` (DH normal order `{-Y,+Y,-Z,+Z,-X,+X}`, matching `LodMesher.normalIndex`):
 
-1. Sweep the 32 layers perpendicular to `d`'s axis. For layer `w`, build a 32Ã—32 array `faceKey[u][v]` (thread-local `long[1024]`):
-   - `c = cell(cell coords)`; if `c == AIR` â†’ no face.
-   - `n = cell(neighbor toward d)`. Face is **visible** iff: `n == AIR`, or `n` is non-opaque (translucent/cutout per `PhotoAtlas.isOpaque(stateId)` CPU table) **and** `stateId(n) != stateId(c)` (same-state translucent faces culled â€” kills water-internal faces).
-   - `faceKey = (c & ~LIGHT_MASK) | (light(n) << 56)` â€” geometry/biome from the solid cell, **light from the adjacent (air/translucent) cell**, vanilla-style. If the neighbor is a missing plane, fall back to `light(c)`, else sky-15.
+1. Sweep the 32 layers perpendicular to `d`'s axis. For layer `w`, build a 32×32 array `faceKey[u][v]` (thread-local `long[1024]`):
+   - `c = cell(cell coords)`; if `c == AIR` → no face.
+   - `n = cell(neighbor toward d)`. Face is **visible** iff: `n == AIR`, or `n` is non-opaque (translucent/cutout per `PhotoAtlas.isOpaque(stateId)` CPU table) **and** `stateId(n) != stateId(c)` (same-state translucent faces culled — kills water-internal faces).
+   - `faceKey = (c & ~LIGHT_MASK) | (light(n) << 56)` — geometry/biome from the solid cell, **light from the adjacent (air/translucent) cell**, vanilla-style. If the neighbor is a missing plane, fall back to `light(c)`, else sky-15.
 2. Scanline merge on `faceKey` (clean-room reimplementation of the well-known technique): walk row `v`, extend run along `u` while keys equal (cap `MERGE_CAP`); then extend the completed rectangle along `v` while the entire next row segment matches (cap `MERGE_CAP`); zero out consumed keys. Emits `Quad(u0, v0, w, sizeU, sizeV, face, key)`.
 3. Route to the **opaque** or **translucent** quad list based on `PhotoAtlas.isTranslucent(stateId)`.
 
-Per-level meshing is *level-blind*: the mesher works entirely in cell space; only the vertex writer multiplies by `2^level` when producing block coordinates. One code path for L0â€“L4.
+Per-level meshing is *level-blind*: the mesher works entirely in cell space; only the vertex writer multiplies by `2^level` when producing block coordinates. One code path for L0–L4.
 
 ### 1.3 Region build
 
@@ -80,45 +80,45 @@ public final class VoxelMesher {
 }
 ```
 
-Loops the region's `4Ã—4Ã—sectionsY(level)` sections; `SectionSnapshot.capture` per section, `coreUniform()` fast-skips buried/air sections. Opaque quads are written first, translucent appended after (single VBO, two ranges â€” see Â§3). Vertex scratch is a thread-local grow-on-demand off-heap buffer (initial 2 MB, doubling, ceiling `MAX_QUADS_PER_REGION*4*STRIDE` â‰ˆ 12.6 MB); exact-size `memAlloc` copy on completion, identical to today's `LodMesher.build` tail.
+Loops the region's `4×4×sectionsY(level)` sections; `SectionSnapshot.capture` per section, `coreUniform()` fast-skips buried/air sections. Opaque quads are written first, translucent appended after (single VBO, two ranges — see §3). Vertex scratch is a thread-local grow-on-demand off-heap buffer (initial 2 MB, doubling, ceiling `MAX_QUADS_PER_REGION*4*STRIDE` ≈ 12.6 MB); exact-size `memAlloc` copy on completion, identical to today's `LodMesher.build` tail.
 
-Edge cases: emit cap hit â†’ truncate + `Iris.logger.warn` once per region; all-translucent region (ocean at L4) â†’ opaqueQuads=0 is legal; sections fully surrounded by opaque neighbors produce zero faces naturally.
+Edge cases: emit cap hit → truncate + `Iris.logger.warn` once per region; all-translucent region (ocean at L4) → opaqueQuads=0 is legal; sections fully surrounded by opaque neighbors produce zero faces naturally.
 
 ---
 
-## 2. Vertex format v2 â€” `LodVertexFormatV2`
+## 2. Vertex format v2 — `LodVertexFormatV2`
 
-**Decision: one VBO, widened 24-byte stride, two VAOs reading subsets.** The DH `dh_terrain` contract is attribute *semantics + offsets*, not stride; the iris VAO simply keeps attributes 0/1/2 at the same offsets as today (0/8/12) with `stride=24` and never sees bytes 16â€“23. No second VBO stream (one allocation, one upload, no lifecycle doubling).
+**Decision: one VBO, widened 24-byte stride, two VAOs reading subsets.** The DH `dh_terrain` contract is attribute *semantics + offsets*, not stride; the iris VAO simply keeps attributes 0/1/2 at the same offsets as today (0/8/12) with `stride=24` and never sees bytes 16–23. No second VBO stream (one allocation, one upload, no lifecycle doubling).
 
 | Offset | Size | Type | Field | Notes |
 |---|---|---|---|---|
 | 0 | 2 | u16 | posX | region-local blocks, 0..2048 (L4 max) |
-| 2 | 2 | u16 | posY | worldY + `Y_BIAS`(512) â†’ 0..832; cell-aligned (512 divisible by 16) |
+| 2 | 2 | u16 | posY | worldY + `Y_BIAS`(512) → 0..832; cell-aligned (512 divisible by 16) |
 | 4 | 2 | u16 | posZ | region-local blocks |
-| 6 | 2 | u16 | lightMeta | bits 0â€“3 skyLight, 4â€“7 blockLight (matches existing `LIGHT_META=0x000F` semantics) |
-| 8 | 4 | 4Ã—u8 | colorRGBA | CPU flat color: `slotTopMipRGB(slot) Ã— biomeTint` (pack path + fallback), A=255 (opaque) / 179 (translucent) |
-| 12 | 1 | u8 | irisExtra.x | **real DH material id** via `DhMaterialMapper` (Â§7) |
-| 13 | 1 | u8 | irisExtra.y | normal index 0â€“5 (DH order) |
-| 14 | 2 | 2Ã—u8 | irisExtra.zw | 0 |
-| 16 | 2 | u16 | atlasSlot | photo-atlas face-slot id (per-face dedup, Â§2.2) |
+| 6 | 2 | u16 | lightMeta | bits 0–3 skyLight, 4–7 blockLight (matches existing `LIGHT_META=0x000F` semantics) |
+| 8 | 4 | 4×u8 | colorRGBA | CPU flat color: `slotTopMipRGB(slot) × biomeTint` (pack path + fallback), A=255 (opaque) / 179 (translucent) |
+| 12 | 1 | u8 | irisExtra.x | **real DH material id** via `DhMaterialMapper` (§7) |
+| 13 | 1 | u8 | irisExtra.y | normal index 0–5 (DH order) |
+| 14 | 2 | 2×u8 | irisExtra.zw | 0 |
+| 16 | 2 | u16 | atlasSlot | photo-atlas face-slot id (per-face dedup, §2.2) |
 | 18 | 2 | u16 | biomeId | 9-bit global biome palette id |
-| 20 | 1 | u8 | faceMeta | bits 0â€“2 face index, bits 3â€“4 tintType (0 none, 1 grass, 2 foliage, 3 water), bit 5 hasTintMask |
+| 20 | 1 | u8 | faceMeta | bits 0–2 face index, bits 3–4 tintType (0 none, 1 grass, 2 foliage, 3 water), bit 5 hasTintMask |
 | 21 | 1 | u8 | flags | bit 0 translucent; rest spare (future per-vertex AO) |
 | 22 | 2 | u16 | pad | keeps stride 4-aligned; reserved |
 
-4 vertices per quad (indexed, Â§3) â†’ **96 B/quad â€” exactly today's 6Ã—16 B/quad.** Memory growth comes only from quad-count increase, not the format.
+4 vertices per quad (indexed, §3) → **96 B/quad — exactly today's 6×16 B/quad.** Memory growth comes only from quad-count increase, not the format.
 
 **VAO layouts (`VoxelRegionMesh`):**
 
-- `voxelVao` (no-pack textured path): `0: IPointer 4Ã—u16 @0` (uvec4 posLight) Â· `1: Pointer 4Ã—u8 norm @8` (vec4 color) Â· `2: IPointer 2Ã—u16 @16` (uvec2 slot,biome) Â· `3: IPointer 2Ã—u8 @20` (uvec2 faceMeta,flags). Shared EBO bound in the VAO.
-- `irisVao` (DH-compat, lazy like today): `0: IPointer 4Ã—u16 @0` Â· `1: Pointer 4Ã—u8 norm @8` Â· `2: IPointer 4Ã—u8 @12` â€” byte-compatible with the patched `dh_terrain` expectations; `HorizonIrisProgram`'s `glBindAttribLocation(0 vPosition, 1 iris_color, 2 irisExtra)` unchanged.
+- `voxelVao` (no-pack textured path): `0: IPointer 4×u16 @0` (uvec4 posLight) · `1: Pointer 4×u8 norm @8` (vec4 color) · `2: IPointer 2×u16 @16` (uvec2 slot,biome) · `3: IPointer 2×u8 @20` (uvec2 faceMeta,flags). Shared EBO bound in the VAO.
+- `irisVao` (DH-compat, lazy like today): `0: IPointer 4×u16 @0` · `1: Pointer 4×u8 norm @8` · `2: IPointer 4×u8 @12` — byte-compatible with the patched `dh_terrain` expectations; `HorizonIrisProgram`'s `glBindAttribLocation(0 vPosition, 1 iris_color, 2 irisExtra)` unchanged.
 
 ### 2.1 In-shader UV derivation (exact)
 
 No UV bytes stored. Per fragment:
 
 ```
-plane coords p (blocks, region-local, y biased): face Â±Y â†’ (x,z); Â±Z â†’ (x,y); Â±X â†’ (z,y)
+plane coords p (blocks, region-local, y biased): face ±Y → (x,z); ±Z → (x,y); ±X → (z,y)
 cellUV  = p / u_cellSize            // u_cellSize = float(1 << level), per-draw uniform
 local   = fract(cellUV)             // tiles the 16x16 photo once per cell across merged quads
 slotUV  = (vec2(slot % u_slotsPerRow, slot / u_slotsPerRow) + local) * u_slotScale
@@ -129,17 +129,17 @@ sample  = textureGrad(u_atlas, slotUV, dFdx(cellUV)*u_slotScale, dFdy(cellUV)*u_
 
 ### 2.2 Photo atlas GL object (consumed here; bake pipeline is the other slice)
 
-- **2D atlas**, `GL_RGBA8`, 5 mip levels (0..4), slots on a 16-texel grid â†’ mip k holds each slot at `16>>k` (mip 4 = 1 texel = the flat-color texel). Default 2048Â² (16 384 slots â‰ˆ 21 MB + mips â‰ˆ 28 MB); grows by realloc-and-copy to 4096Â² max (65 536 slots â€” matches u16 `atlasSlot`).
-- Slot = **one face image**, dedup across faces and states (stone â†’ 1 slot for all 6 faces; grass â†’ 3). Mesher resolves `slot = atlasIndex.slotOf(stateId, face)` from a CPU `int[stateId*6+face]` table (`PhotoAtlasIndex`), with slot 0 = magenta/MapColor fallback while a bake is pending.
+- **2D atlas**, `GL_RGBA8`, 5 mip levels (0..4), slots on a 16-texel grid → mip k holds each slot at `16>>k` (mip 4 = 1 texel = the flat-color texel). Default 2048² (16 384 slots ≈ 21 MB + mips ≈ 28 MB); grows by realloc-and-copy to 4096² max (65 536 slots — matches u16 `atlasSlot`).
+- Slot = **one face image**, dedup across faces and states (stone → 1 slot for all 6 faces; grass → 3). Mesher resolves `slot = atlasIndex.slotOf(stateId, face)` from a CPU `int[stateId*6+face]` table (`PhotoAtlasIndex`), with slot 0 = magenta/MapColor fallback while a bake is pending.
 - Sampler: `GL_NEAREST_MIPMAP_LINEAR`, `GL_TEXTURE_MAX_LOD=4`, wrap `CLAMP_TO_EDGE` (wrap handled by `fract`).
 - **Tint-mask atlas**: parallel `GL_R8` texture, identical layout; mip chain generated with **max()** downsample (tinted stays tinted). Sampled only when `faceMeta.hasTintMask`.
-- CPU-side per-slot metadata (`PhotoAtlasIndex`): `int topMipRGB[slot]` (for CPU flat color), `byte tintType[stateId]`, `boolean opaque[stateId]`, `boolean translucent[stateId]` â€” filled by the bakery, read by the mesher.
+- CPU-side per-slot metadata (`PhotoAtlasIndex`): `int topMipRGB[slot]` (for CPU flat color), `byte tintType[stateId]`, `boolean opaque[stateId]`, `boolean translucent[stateId]` — filled by the bakery, read by the mesher.
 
-### 2.3 Biome tint LUT â€” `BiomeTintLut`
+### 2.3 Biome tint LUT — `BiomeTintLut`
 
 - `GL_TEXTURE_2D`, `GL_RGBA8`, **width 4** (col 0 grass, 1 foliage, 2 water, 3 spare), **height 512** (9-bit biome palette), `GL_NEAREST`, no mips.
-- Row content per biome palette id, evaluated once on the client thread when the id registers: `biome.getGrassColor(0,0)`, `biome.getFoliageColor()`, `biome.getWaterColor()` (position-noise variants sampled at origin â€” accepted simplification).
-- Update path: biome palette registration enqueues `(row, rgbÃ—3)` into a `ConcurrentLinkedQueue` drained at render start with one `glTexSubImage2D(row)` each (same pixel-store hardening block as `updateChunkMask`). Full rebuild on world join and resource reload.
+- Row content per biome palette id, evaluated once on the client thread when the id registers: `biome.getGrassColor(0,0)`, `biome.getFoliageColor()`, `biome.getWaterColor()` (position-noise variants sampled at origin — accepted simplification).
+- Update path: biome palette registration enqueues `(row, rgb×3)` into a `ConcurrentLinkedQueue` drained at render start with one `glTexSubImage2D(row)` each (same pixel-store hardening block as `updateChunkMask`). Full rebuild on world join and resource reload.
 - `BiomeTintTable` (CPU mirror, `int[512*3]`) is what the mesher uses for the CPU flat color at offset 8.
 - Fragment: `tint = (tintType==0) ? vec3(1) : texelFetch(u_biomeLut, ivec2(tintType-1, biomeId), 0).rgb;` then `rgb = mix(rgb, rgb*tint, maskValue)`.
 
@@ -149,45 +149,45 @@ sample  = textureGrad(u_atlas, slotUV, dFdx(cellUV)*u_slotScale, dFdy(cellUV)*u_
 
 ### 3.1 Draw unit: aggregated region, per level
 
-**Decision: draw unit = `VoxelRegionMesh` = one VBO covering 4Ã—4 sections XZ Ã— full height, per (level, rx, rz).** Per-section draws are untenable without MDI: at 4096 blocks the L0 collar alone is ~3 000 section draws. Region math at 4096 blocks (defaults, `lodRingWidth=1024`, circle residency Ï€/4):
+**Decision: draw unit = `VoxelRegionMesh` = one VBO covering 4×4 sections XZ × full height, per (level, rx, rz).** Per-section draws are untenable without MDI: at 4096 blocks the L0 collar alone is ~3 000 section draws. Region math at 4096 blocks (defaults, `lodRingWidth=1024`, circle residency π/4):
 
 | Level | Ring (blocks) | Region span | Resident regions (circle) |
 |---|---|---|---|
-| 0 (collar+near) | 0â€“1024 | 128 | â‰ˆ 201 |
-| 1 | 1024â€“2048 | 256 | â‰ˆ 151 |
-| 2 | 2048â€“4096 | 512 | â‰ˆ 151 |
-| **Total** | | | **â‰ˆ 500 resident; ~150â€“250 drawn/frame after frustum** |
+| 0 (collar+near) | 0–1024 | 128 | ≈ 201 |
+| 1 | 1024–2048 | 256 | ≈ 151 |
+| 2 | 2048–4096 | 512 | ≈ 151 |
+| **Total** | | | **≈ 500 resident; ~150–250 drawn/frame after frustum** |
 
-(At larger distances L3/L4 rings appear; totals stay â‰¤ ~700.) Today's system holds ~3 200 region meshes at the same distance and draws ~800â€“1000 â€” the new scheme is *fewer* draw calls. Each draw = 1Ã— `glUniform3f` + 1â€“2Ã— `glDrawElements`.
+(At larger distances L3/L4 rings appear; totals stay ≤ ~700.) Today's system holds ~3 200 region meshes at the same distance and draws ~800–1000 — the new scheme is *fewer* draw calls. Each draw = 1× `glUniform3f` + 1–2× `glDrawElements`.
 
-### 3.2 Shared quad index buffer â€” `SharedQuadIndexBuffer`
+### 3.2 Shared quad index buffer — `SharedQuadIndexBuffer`
 
-One global static EBO (new â€” none exists today): u32 indices, pattern `4q+{0,1,2, 2,3,0}`, sized `MAX_QUADS_PER_REGION*6*4` = 3 MB, filled once lazily on the render thread, bound inside every mesh VAO. Draws:
+One global static EBO (new — none exists today): u32 indices, pattern `4q+{0,1,2, 2,3,0}`, sized `MAX_QUADS_PER_REGION*6*4` = 3 MB, filled once lazily on the render thread, bound inside every mesh VAO. Draws:
 
 - opaque: `glDrawElements(GL_TRIANGLES, opaqueQuads*6, GL_UNSIGNED_INT, 0)`
-- translucent: `glDrawElementsBaseVertex(GL_TRIANGLES, translucentQuads*6, GL_UNSIGNED_INT, 0, opaqueQuads*4)` (GL 3.2 core â€” macOS-safe).
+- translucent: `glDrawElementsBaseVertex(GL_TRIANGLES, translucentQuads*6, GL_UNSIGNED_INT, 0, opaqueQuads*4)` (GL 3.2 core — macOS-safe).
 
 ### 3.3 Upload path & lifecycle
 
-Reuse `LodRenderer`'s exact queue/epoch pattern: worker `submit(regionKey, MeshData, jobEpoch)` under `epochLock`; render-thread `processUploads` bounded by `maxUploadsPerFrame` (default 4) **plus a new byte budget `MAX_UPLOAD_BYTES_PER_FRAME = 8 MB`** (large L0 regions). `GL_STATIC_DRAW`, whole-mesh replacement on change (same as today â€” no sub-updates). `evictOutside` becomes per-level: keep radius in *that level's* region units (`radiusRegions(level) = ceil(ringOuter(level) / regionSpan(level)) + 2`).
+Reuse `LodRenderer`'s exact queue/epoch pattern: worker `submit(regionKey, MeshData, jobEpoch)` under `epochLock`; render-thread `processUploads` bounded by `maxUploadsPerFrame` (default 4) **plus a new byte budget `MAX_UPLOAD_BYTES_PER_FRAME = 8 MB`** (large L0 regions). `GL_STATIC_DRAW`, whole-mesh replacement on change (same as today — no sub-updates). `evictOutside` becomes per-level: keep radius in *that level's* region units (`radiusRegions(level) = ceil(ringOuter(level) / regionSpan(level)) + 2`).
 
 ### 3.4 Memory estimates (defaults, 4096 blocks)
 
-Assumptions: typical surface region â‰ˆ 16â€“24 non-trivial sections; 2D greedy on natural terrain â‰ˆ 250â€“400 quads/surface-section; coarser levels merge better (mip homogenizes states; oceans/plains hit the 16Ã—16 cap).
+Assumptions: typical surface region ≈ 16–24 non-trivial sections; 2D greedy on natural terrain ≈ 250–400 quads/surface-section; coarser levels merge better (mip homogenizes states; oceans/plains hit the 16×16 cap).
 
 | | Per region | Count | Total VRAM |
 |---|---|---|---|
-| L0 regions | 0.5â€“0.8 MB | ~200 | 100â€“160 MB |
-| L1 | 0.3â€“0.5 MB | ~151 | 45â€“75 MB |
-| L2 | 0.2â€“0.4 MB | ~151 | 30â€“60 MB |
+| L0 regions | 0.5–0.8 MB | ~200 | 100–160 MB |
+| L1 | 0.3–0.5 MB | ~151 | 45–75 MB |
+| L2 | 0.2–0.4 MB | ~151 | 30–60 MB |
 | Atlas + mask + LUT + EBO | | | ~35 MB |
-| **Total** | | | **â‰ˆ 210â€“330 MB** (today est. 60â€“120 MB â†’ **2â€“4Ã—**, inside the predicted 2â€“5Ã—) |
+| **Total** | | | **≈ 210–330 MB** (today est. 60–120 MB → **2–4×**, inside the predicted 2–5×) |
 
-Mitigation knobs: `maxLodVramMb` config (default 512) â€” renderer tracks summed VBO bytes and clamps effective lodDistance when exceeded (log once).
+Mitigation knobs: `maxLodVramMb` config (default 512) — renderer tracks summed VBO bytes and clamps effective lodDistance when exceeded (log once).
 
 ---
 
-## 4. LOD level selection & seams â€” `VoxelLodSelector`
+## 4. LOD level selection & seams — `VoxelLodSelector`
 
 Map today's `desiredScale` (HorizonLod.java:454) onto mips:
 
@@ -200,28 +200,28 @@ static int levelFor(double dist, int rdBlocks, HorizonConfig cfg) {
 }
 ```
 
-Scheduler: the existing ring sweep in `HorizonLod.scheduleMeshes` runs once **per level** over that level's region grid, restricted to the level's annulus `[ringInner, ringOuter)` with **one-region overlap outward** (finer ring extends one coarse-region width past its boundary so the coarse wall is always backed). Hysteresis reuses today's rule verbatim with `level Â± 1` in place of `scale/2..2Ã—scale`.
+Scheduler: the existing ring sweep in `HorizonLod.scheduleMeshes` runs once **per level** over that level's region grid, restricted to the level's annulus `[ringInner, ringOuter)` with **one-region overlap outward** (finer ring extends one coarse-region width past its boundary so the coarse wall is always backed). Hysteresis reuses today's rule verbatim with `level ± 1` in place of `scale/2..2×scale`.
 
-**Seam policy (decided): boundary walls, no T-junction stitching, no separate skirt code.** Same-level neighbor regions share the cell grid â†’ zero cracks. Cross-level boundaries: the missing-neighbor=AIR rule (Â§1.1) emits a full closed wall on both sides; combined with the finer ring's one-region overlap and polygon offset 3/3, coarse geometry sits *behind* fine geometry and any T-junction crack shows backing wall, never sky. Overdraw cost is one 32Ã—`h` wall per boundary section â€” negligible.
+**Seam policy (decided): boundary walls, no T-junction stitching, no separate skirt code.** Same-level neighbor regions share the cell grid → zero cracks. Cross-level boundaries: the missing-neighbor=AIR rule (§1.1) emits a full closed wall on both sides; combined with the finer ring's one-region overlap and polygon offset 3/3, coarse geometry sits *behind* fine geometry and any T-junction crack shows backing wall, never sky. Overdraw cost is one 32×`h` wall per boundary section — negligible.
 
-**Collar vs real terrain: the coverage mask survives as-is.** It is XZ-only per-chunk coverage; voxel LOD (including caves) under a loaded chunk is discarded wholesale â€” correct, real terrain renders there. Keep `MASK_SIZE=160`, linear filter, 0.3â€“0.7 dither window, `updateChunkMask` untouched, polygon offset 3.0/3.0 in both paths, `isRegionFullyCovered` reused with the level-0 region footprint only (coarser regions are never inside render distance).
+**Collar vs real terrain: the coverage mask survives as-is.** It is XZ-only per-chunk coverage; voxel LOD (including caves) under a loaded chunk is discarded wholesale — correct, real terrain renders there. Keep `MASK_SIZE=160`, linear filter, 0.3–0.7 dither window, `updateChunkMask` untouched, polygon offset 3.0/3.0 in both paths, `isRegionFullyCovered` reused with the level-0 region footprint only (coarser regions are never inside render distance).
 
 ---
 
-## 5. Render loop â€” `VoxelRenderer`
+## 5. Render loop — `VoxelRenderer`
 
-Injection point unchanged: `MixinLevelRenderer_Horizon` at `stringValue=translucent`, priority 999 â†’ `HorizonLod.render` â†’ engine switch (`HorizonConfig.engine`: `classic` routes to old `LodRenderer`, `voxel` here).
+Injection point unchanged: `MixinLevelRenderer_Horizon` at `stringValue=translucent`, priority 999 → `HorizonLod.render` → engine switch (`HorizonConfig.engine`: `classic` routes to old `LodRenderer`, `voxel` here).
 
 Frame sequence (render thread):
 
 1. `processUploads(budget)`; drain `BiomeTintLut` row queue.
-2. Pack active? â†’ `renderIris(...)` (Â§7); on false fall through.
+2. Pack active? → `renderIris(...)` (§7); on false fall through.
 3. No-pack pass: `updateChunkMask(...)` (reused), build `mvp`/frustum (reused), save GL state (same discipline as `LodRenderer.render` incl. the draw-buffers narrowing block for stray multi-attachment FBOs).
-4. **Opaque pass**: depth test LEQUAL, depth write on, blend off, cull **on** (v2 quads have consistent winding â€” front faces outward; the mesher's vertex order per face direction guarantees it, unlike the old two-sided column mesh), polygon offset 3/3. Bind unit 0 atlas, 1 tint-mask atlas, 2 biome LUT, 3 chunk mask. For each mesh (all levels interleaved is fine â€” depth handles it): coverage-skip (L0 only) â†’ radial reject (`lodDistanceBlocks+192`) â†’ frustum AABB (minY/maxY tracked per mesh) â†’ set `u_offset` (region origin âˆ’ cam, y âˆ’= Y_BIAS), `u_cellSize` â†’ draw opaque range.
-5. **Translucent pass** (same injection point, still before vanilla translucent so near water blends over LOD *and* vanilla translucent draws after): blend `SRC_ALPHA, ONE_MINUS_SRC_ALPHA`, **depth write ON** (distant water is essentially a single surface; writing depth prevents underdraw artifacts and matches vanilla translucent terrain), regions CPU-sorted back-to-front by center distance (â‰¤ ~300 entries, `Arrays.sort` on packed dist keys â€” trivial); intra-region unsorted (coplanar ocean surfaces; accepted at LOD distance). Draw translucent ranges only.
-6. Restore GL state (each touched texture unit's binding saved/restored, active texture restored â€” extend the existing pattern).
+4. **Opaque pass**: depth test LEQUAL, depth write on, blend off, cull **on** (v2 quads have consistent winding — front faces outward; the mesher's vertex order per face direction guarantees it, unlike the old two-sided column mesh), polygon offset 3/3. Bind unit 0 atlas, 1 tint-mask atlas, 2 biome LUT, 3 chunk mask. For each mesh (all levels interleaved is fine — depth handles it): coverage-skip (L0 only) → radial reject (`lodDistanceBlocks+192`) → frustum AABB (minY/maxY tracked per mesh) → set `u_offset` (region origin − cam, y −= Y_BIAS), `u_cellSize` → draw opaque range.
+5. **Translucent pass** (same injection point, still before vanilla translucent so near water blends over LOD *and* vanilla translucent draws after): blend `SRC_ALPHA, ONE_MINUS_SRC_ALPHA`, **depth write ON** (distant water is essentially a single surface; writing depth prevents underdraw artifacts and matches vanilla translucent terrain), regions CPU-sorted back-to-front by center distance (≤ ~300 entries, `Arrays.sort` on packed dist keys — trivial); intra-region unsorted (coplanar ocean surfaces; accepted at LOD distance). Draw translucent ranges only.
+6. Restore GL state (each touched texture unit's binding saved/restored, active texture restored — extend the existing pattern).
 
-Fog & light (no-pack): fog is now real (the flat-color banding objection no longer applies to textured terrain): horizontal-distance linear fog `u_fogStart = 0.8Â·lodDist`, `u_fogEnd = lodDist`, color from `RenderSystem.getShaderFogColor()`. Per-fragment light: `l = max(blockLight/15, skyLight/15 * u_skyFactor)` where `u_skyFactor` is the existing day/night brightness scalar from `HorizonLod.render` (0.15â€“1.0); final `rgb *= (0.05 + 0.95*l) * faceShade[normal]` with vanilla face shading `{0.5, 1.0, 0.8, 0.8, 0.6, 0.6}`.
+Fog & light (no-pack): fog is now real (the flat-color banding objection no longer applies to textured terrain): horizontal-distance linear fog `u_fogStart = 0.8·lodDist`, `u_fogEnd = lodDist`, color from `RenderSystem.getShaderFogColor()`. Per-fragment light: `l = max(blockLight/15, skyLight/15 * u_skyFactor)` where `u_skyFactor` is the existing day/night brightness scalar from `HorizonLod.render` (0.15–1.0); final `rgb *= (0.05 + 0.95*l) * faceShade[normal]` with vanilla face shading `{0.5, 1.0, 0.8, 0.8, 0.6, 0.6}`.
 
 ---
 
@@ -278,19 +278,19 @@ void main() {
 }
 ```
 
-Compile/link via the existing `initShader`/`compile` pattern with `shaderFailed` latch; attribute locations bound 0â€“3.
+Compile/link via the existing `initShader`/`compile` pattern with `shaderFailed` latch; attribute locations bound 0–3.
 
 ---
 
 ## 7. Phase-1 shaderpack path (flat color + real materials), Phase-2 hooks
 
-**Decision: pack-path vertex color = CPU-computed at mesh time** = `PhotoAtlasIndex.topMipRGB(slot)` (the bake's mip-4 texel â€” i.e. the true average of the real face render) `Ã— BiomeTintTable` color for the cell's biome/tintType, written to offset 8. No atlas sample in the pack path in phase 1 (packs' `dh_terrain` is flat-color by design). This is strictly better than today: correct per-block hue + correct biome tint instead of the old capture-time average, and per-face rather than per-column.
+**Decision: pack-path vertex color = CPU-computed at mesh time** = `PhotoAtlasIndex.topMipRGB(slot)` (the bake's mip-4 texel — i.e. the true average of the real face render) `× BiomeTintTable` color for the cell's biome/tintType, written to offset 8. No atlas sample in the pack path in phase 1 (packs' `dh_terrain` is flat-color by design). This is strictly better than today: correct per-block hue + correct biome tint instead of the old capture-time average, and per-face rather than per-column.
 
-- **Material ids (irisExtra.x)**: new `DhMaterialMapper` â€” `int materialOf(BlockState)` cached as `byte[]` indexed by blockstate palette id, resolving to the DH material constants that `StandardMacros`' `DH_BLOCK_*` defines expose (LEAVES/STONE/WOOD/DIRT/SAND/SNOW/GRASS/WATER/LAVA/DEEPSLATE/NETHER_STONE/TERRACOTTA/ILLUMINATED/AIR) via block tags (`BlockTags.LEAVES`, `LOGS`, `DIRT`â€¦), fluid checks, `state.getLightEmission() > 0` â†’ ILLUMINATED, MapColor fallback. Additionally register the pack's own `WorldRenderingSettings.INSTANCE.getBlockStateIds()` mapping (WorldRenderingSettings.java:53) keyed per state palette id for phase-2 PBR use.
-- **Normals**: irisExtra.y = face index â€” now genuinely per face from the mesher (correct on all 6 directions, unlike the 2.5D top/skirt-only geometry).
-- **Light**: lightMeta now carries real captured sky/block light per face instead of constant `0x000F` â€” packs' `dh_terrain` lightmap path lights caves/overhangs correctly.
-- **`HorizonIrisProgram` reuse: confirmed as-is.** Attribute bindings (0/1/2), uniform fills, `TransformPatcher.patchDHTerrain`, `createHorizonFramebuffer` depth-sharing, `HorizonRuntime.setMainDepthTex` publication â€” all unchanged. Only `renderIris` in the new renderer changes mechanically: iterate `VoxelRegionMesh`es, per-level `setModelPos(ox, relY âˆ’ Y_BIAS, oz)`, `drawIris()` = bind irisVao + the two `glDrawElements` ranges (translucent range drawn in the same pass â€” dh_terrain handles DH translucency via blend overrides already wired in `HorizonIrisProgram.bind`; if a pack has a separate `dh_water` program, fetch it via `pipeline.getDHWaterShader()` if present, else reuse terrain â€” flagged as a small follow-up).
-- **Phase-2 hook points (identify only)**: (a) `TransformPatcher.patchDHTerrain` call site in `HorizonIrisProgram.createProgram` â€” swap for a `patchHorizonTerrain` variant that injects atlas/LUT samplers, the Â§2.1 UV derivation, and declarations for attributes 3/4 into the patched source; (b) `ProgramSamplers.Builder` in the `HorizonIrisProgram` constructor â€” `addExternalSampler` for `horizonAtlas`/`horizonTintMask`/`horizonBiomeLut` on reserved units; (c) `VoxelRegionMesh.irisVao` â€” enable attribs 3/4 (texInfo/meta) when the phase-2 patch is active; (d) `StandardMacros` â€” add `HORIZON_TEXTURED` define so packs/patcher can branch.
+- **Material ids (irisExtra.x)**: new `DhMaterialMapper` — `int materialOf(BlockState)` cached as `byte[]` indexed by blockstate palette id, resolving to the DH material constants that `StandardMacros`' `DH_BLOCK_*` defines expose (LEAVES/STONE/WOOD/DIRT/SAND/SNOW/GRASS/WATER/LAVA/DEEPSLATE/NETHER_STONE/TERRACOTTA/ILLUMINATED/AIR) via block tags (`BlockTags.LEAVES`, `LOGS`, `DIRT`…), fluid checks, `state.getLightEmission() > 0` → ILLUMINATED, MapColor fallback. Additionally register the pack's own `WorldRenderingSettings.INSTANCE.getBlockStateIds()` mapping (WorldRenderingSettings.java:53) keyed per state palette id for phase-2 PBR use.
+- **Normals**: irisExtra.y = face index — now genuinely per face from the mesher (correct on all 6 directions, unlike the 2.5D top/skirt-only geometry).
+- **Light**: lightMeta now carries real captured sky/block light per face instead of constant `0x000F` — packs' `dh_terrain` lightmap path lights caves/overhangs correctly.
+- **`HorizonIrisProgram` reuse: confirmed as-is.** Attribute bindings (0/1/2), uniform fills, `TransformPatcher.patchDHTerrain`, `createHorizonFramebuffer` depth-sharing, `HorizonRuntime.setMainDepthTex` publication — all unchanged. Only `renderIris` in the new renderer changes mechanically: iterate `VoxelRegionMesh`es, per-level `setModelPos(ox, relY − Y_BIAS, oz)`, `drawIris()` = bind irisVao + the two `glDrawElements` ranges (translucent range drawn in the same pass — dh_terrain handles DH translucency via blend overrides already wired in `HorizonIrisProgram.bind`; if a pack has a separate `dh_water` program, fetch it via `pipeline.getDHWaterShader()` if present, else reuse terrain — flagged as a small follow-up).
+- **Phase-2 hook points (identify only)**: (a) `TransformPatcher.patchDHTerrain` call site in `HorizonIrisProgram.createProgram` — swap for a `patchHorizonTerrain` variant that injects atlas/LUT samplers, the §2.1 UV derivation, and declarations for attributes 3/4 into the patched source; (b) `ProgramSamplers.Builder` in the `HorizonIrisProgram` constructor — `addExternalSampler` for `horizonAtlas`/`horizonTintMask`/`horizonBiomeLut` on reserved units; (c) `VoxelRegionMesh.irisVao` — enable attribs 3/4 (texInfo/meta) when the phase-2 patch is active; (d) `StandardMacros` — add `HORIZON_TEXTURED` define so packs/patcher can branch.
 
 ---
 
@@ -316,7 +316,7 @@ Apply the same method to the classic `LodRenderer` (closing the existing hole fo
 | Object | Owner | Created | Destroyed |
 |---|---|---|---|
 | `PhotoAtlas` GL textures (+tint mask) | `PhotoAtlas` singleton | lazily, render thread, first bake flush | resource-reload listener + client shutdown (bakes are resource-scoped, survive world changes) |
-| `BiomeTintLut` texture | `VoxelRenderer` | lazily | world unload (`clear()`) â€” biome palette is per-world |
+| `BiomeTintLut` texture | `VoxelRenderer` | lazily | world unload (`clear()`) — biome palette is per-world |
 | `SharedQuadIndexBuffer` | static | lazily | client shutdown only |
 | `VoxelRegionMesh` VAO/VBO | `VoxelRenderer.meshes` | `processUploads` | replace/evict/`clear()` |
 | `HorizonIrisProgram` + FBO | `VoxelRenderer` | pipeline/depth-tex change (as today) | pipeline change **or `onPipelineDestroyed`** |
@@ -332,20 +332,20 @@ New, in `net.irisshaders.iris.horizon.voxel`:
 
 | Class | Role |
 |---|---|
-| `VoxelConstants` | Â§0 constants |
-| `VoxelRegionKey` | (level,rx,rz) â†” long |
-| `SectionSnapshot` | thread-local 34Â³ cell view (Â§1.1) |
-| `VoxelMesher` (+ nested `MeshData`, `QuadSink`) | greedy scanline, region build (Â§1) |
-| `LodVertexFormatV2` | offsets/stride constants + static `writeQuad(ByteBuffer, â€¦)` |
-| `VoxelRegionMesh` | VAOÃ—2/VBO, opaque+translucent ranges, minY/maxY, coveredEpoch cache (mirrors `LodRegionMesh`) |
-| `SharedQuadIndexBuffer` | global u32 EBO (Â§3.2) |
-| `VoxelRenderer` | upload queue/epoch, mask reuse, no-pack + iris passes, `onPipelineDestroyed` (Â§5, Â§7, Â§8) |
-| `NoPackVoxelShader` | inline GLSL 150 program holder (Â§6) |
-| `BiomeTintLut` / `BiomeTintTable` | GPU LUT + CPU mirror (Â§2.3) |
+| `VoxelConstants` | §0 constants |
+| `VoxelRegionKey` | (level,rx,rz) ↔ long |
+| `SectionSnapshot` | thread-local 34³ cell view (§1.1) |
+| `VoxelMesher` (+ nested `MeshData`, `QuadSink`) | greedy scanline, region build (§1) |
+| `LodVertexFormatV2` | offsets/stride constants + static `writeQuad(ByteBuffer, …)` |
+| `VoxelRegionMesh` | VAO×2/VBO, opaque+translucent ranges, minY/maxY, coveredEpoch cache (mirrors `LodRegionMesh`) |
+| `SharedQuadIndexBuffer` | global u32 EBO (§3.2) |
+| `VoxelRenderer` | upload queue/epoch, mask reuse, no-pack + iris passes, `onPipelineDestroyed` (§5, §7, §8) |
+| `NoPackVoxelShader` | inline GLSL 150 program holder (§6) |
+| `BiomeTintLut` / `BiomeTintTable` | GPU LUT + CPU mirror (§2.3) |
 | `PhotoAtlasIndex` | CPU slot/opacity/tint/topMip tables (GL atlas itself in the bake slice) |
-| `DhMaterialMapper` | state â†’ DH material byte + pack block-id registry (Â§7) |
-| `VoxelLodSelector` | dist â†’ level + per-level ring scheduling helpers (Â§4) |
+| `DhMaterialMapper` | state → DH material byte + pack block-id registry (§7) |
+| `VoxelLodSelector` | dist → level + per-level ring scheduling helpers (§4) |
 
 Touched existing files: `HorizonLod.java` (engine switch, per-level scheduler, `onPipelineDestroyed` forward), `IrisRenderingPipeline.java` (destroy hook, unchanged framebuffer/depth API), `LodRenderer.java` (receive the same destroy hook), `HorizonConfig` 4-file pattern (add `engine`, `maxLodVramMb`, `maxUploadBytesPerFrame`). Unchanged: `MixinLevelRenderer_Horizon`, `MixinGameRenderer_Horizon`, `HorizonRuntime`, `DHCompat`, `HorizonIrisProgram`, `TransformPatcher`.
 
-Key risk notes for implementers: (1) winding-order correctness per face direction is what enables backface culling â€” unit-test `normalIndex` agreement against emitted vertex order; (2) the `fract` UV wrap requires `textureGrad` â€” plain `texture()` will show one-texel mip seams on every cell border; (3) `irisFailed` must reset in `onPipelineDestroyed` or one bad pack permanently degrades the session; (4) missing-neighbor=AIR means the data slice must dirty-notify neighbor regions on section creation or frontier walls persist.
+Key risk notes for implementers: (1) winding-order correctness per face direction is what enables backface culling — unit-test `normalIndex` agreement against emitted vertex order; (2) the `fract` UV wrap requires `textureGrad` — plain `texture()` will show one-texel mip seams on every cell border; (3) `irisFailed` must reset in `onPipelineDestroyed` or one bad pack permanently degrades the session; (4) missing-neighbor=AIR means the data slice must dirty-notify neighbor regions on section creation or frontier walls persist.

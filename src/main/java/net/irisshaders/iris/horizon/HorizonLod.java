@@ -359,6 +359,8 @@ public final class HorizonLod {
 		}
 		final double camX = mc.player.getX();
 		final double camZ = mc.player.getZ();
+		net.irisshaders.iris.horizon.voxel.VoxelDiag.checkPlayer(store,
+			(int) Math.floor(camX), (int) Math.floor(mc.player.getY()), (int) Math.floor(camZ));
 		RenderSystem.recordRenderCall(() -> voxelRenderer.evict(camX, camZ));
 
 		final int worldMinY = level.getMinBuildHeight();

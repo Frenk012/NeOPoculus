@@ -19,7 +19,10 @@ import net.neoforged.fml.loading.FMLPaths;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -127,6 +130,8 @@ public final class VoxelEngine {
 	private final AtomicInteger blockUpdateQueueSize = new AtomicInteger();
 	/** Snapshots submitted to workers and not yet ingested; the backpressure gauge. */
 	private final AtomicInteger pendingSnapshots = new AtomicInteger();
+	/** Mesh regions (all levels) whose data changed since the last drain; the renderer re-meshes them. */
+	private final java.util.Set<Long> dirtyMeshRegions = ConcurrentHashMap.newKeySet();
 
 	private int tickCounter;
 	/** Tick until which the periodic remip kick stays armed; client thread only. */
@@ -149,6 +154,26 @@ public final class VoxelEngine {
 	/** Two-tier store for the current dimension; null between levels. The M3 mesher reads through it. */
 	public VoxelStore store() {
 		return store;
+	}
+
+	/** Marks every level's mesh region covering a chunk as needing a re-mesh. Worker thread. */
+	private void markMeshRegionsDirty(int chunkX, int chunkZ) {
+		int bx = chunkX << 4;
+		int bz = chunkZ << 4;
+		for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL; lvl++) {
+			int span = VoxelRegionKey.regionSpanBlocks(lvl);
+			dirtyMeshRegions.add(VoxelRegionKey.pack(lvl, Math.floorDiv(bx, span), Math.floorDiv(bz, span)));
+		}
+	}
+
+	/** Takes the mesh regions dirtied since the last call; the scheduler re-meshes them. Client thread. */
+	public Set<Long> drainDirtyMeshRegions() {
+		if (dirtyMeshRegions.isEmpty()) {
+			return Set.of();
+		}
+		Set<Long> copy = new HashSet<>(dirtyMeshRegions);
+		dirtyMeshRegions.removeAll(copy);
+		return copy;
 	}
 
 	// --- Event entry points (client thread, via HorizonLod) ---
@@ -246,6 +271,7 @@ public final class VoxelEngine {
 		blockUpdateQueueSize.set(0);
 		blockUpdateDropLogged = false;
 		remipArmedUntilTick = 0;
+		dirtyMeshRegions.clear();
 		// The shared palette is NOT cleared here: it is world-scoped and kept
 		// across dimension switches; it is cleared and reloaded only when the
 		// world id actually changes (ensureWorld).
@@ -432,6 +458,12 @@ public final class VoxelEngine {
 				worker.submit(() -> {
 					try {
 						VoxelIngest.ingest(snapshot, s, palettes);
+						// New data landed: flag the mesh regions covering this
+						// chunk so the scheduler re-meshes them with the fuller
+						// data. Without this, a region meshed from a partial
+						// ingest stays a floating fragment (the exploration
+						// pillars) until it is evicted and re-approached.
+						markMeshRegionsDirty(pos.x, pos.z);
 					} catch (Throwable t) {
 						// An ingest failure (exotic modded state mid-convert)
 						// must never kill the worker or the queue.

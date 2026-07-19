@@ -381,6 +381,19 @@ public final class HorizonLod {
 		int lodDist = HorizonConfig.get().getLodDistanceBlocks();
 
 		int[] scheduled = {0};
+
+		// Re-mesh regions whose data just grew (new chunk ingested): only the
+		// ones already built — a not-yet-meshed region is left to the ring
+		// sweep, so this pass just refreshes stale partial meshes into complete
+		// ones instead of re-doing initial work.
+		for (long key : voxelEngine.drainDirtyMeshRegions()) {
+			if (scheduled[0] >= MAX_VOXEL_SCHEDULED_PER_TICK) {
+				break;
+			}
+			if (voxelRenderer.hasMesh(key)) {
+				submitVoxelBuild(store, colors, palettes, key, worldMinY, worldMaxY, scheduled);
+			}
+		}
 		for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL && scheduled[0] < MAX_VOXEL_SCHEDULED_PER_TICK; lvl++) {
 			int span = VoxelRegionKey.regionSpanBlocks(lvl);
 			int radius = VoxelLodSelector.radiusRegions(lvl);
@@ -435,26 +448,44 @@ public final class HorizonLod {
 			return; // a coarser/finer level owns this region
 		}
 		final long key = VoxelRegionKey.pack(lvl, rx, rz);
-		if (voxelRenderer.hasMesh(key) || emptyVoxelRegions.contains(key) || !voxelRenderer.markScheduled(key)) {
+		if (voxelRenderer.hasMesh(key) || emptyVoxelRegions.contains(key)) {
 			return;
 		}
-		final int frx = rx, frz = rz, flvl = lvl, fmin = worldMinY, fmax = worldMaxY;
+		submitVoxelBuild(store, colors, palettes, key, worldMinY, worldMaxY, scheduled);
+	}
+
+	/**
+	 * Submits one region build to a worker (initial mesh or dirty re-mesh),
+	 * replacing any existing mesh for the key. {@code markScheduled} dedupes an
+	 * in-flight build. The caller decides whether the region is eligible; this
+	 * just does the submit + bookkeeping.
+	 */
+	private void submitVoxelBuild(VoxelStore store, VoxelColorTable colors, VoxelPalettes palettes,
+								  long key, int worldMinY, int worldMaxY, int[] scheduled) {
+		if (!voxelRenderer.markScheduled(key)) {
+			return; // already building
+		}
+		emptyVoxelRegions.remove(key);
+		final int lvl = VoxelRegionKey.level(key);
+		final int rx = VoxelRegionKey.rx(key);
+		final int rz = VoxelRegionKey.rz(key);
+		final int fmin = worldMinY, fmax = worldMaxY;
 		final int jobEpoch = voxelRenderer.currentEpoch();
 		worker.submit(() -> {
 			try {
 				VoxelMesher.MeshData data = VoxelMesher.buildRegion(store, colors, palettes,
-					flvl, frx, frz, key, fmin, fmax);
+					lvl, rx, rz, key, fmin, fmax);
 				if (data == null) {
 					// No data here (unexplored / all-air). Remember it so the
 					// budget stops re-scheduling it every tick; a chunk load in
-					// this area clears the flag (onChunkLoad) so it retries.
+					// this area clears the flag so it retries.
 					emptyVoxelRegions.add(key);
 				}
 				voxelRenderer.submit(key, data, jobEpoch);
 			} catch (Throwable t) {
 				voxelRenderer.submit(key, null, jobEpoch);
-				Iris.logger.error("Horizon: voxel mesh build failed for L" + flvl
-					+ " region " + frx + "," + frz, t);
+				Iris.logger.error("Horizon: voxel mesh build failed for L" + lvl
+					+ " region " + rx + "," + rz, t);
 			}
 		});
 		scheduled[0]++;

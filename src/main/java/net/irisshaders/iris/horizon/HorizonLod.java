@@ -62,6 +62,8 @@ public final class HorizonLod {
 	private final VoxelColorTable voxelColorTable = new VoxelColorTable(voxelEngine.palettes());
 	/** Bounded voxel mesh builds queued per client tick. */
 	private static final int MAX_VOXEL_SCHEDULED_PER_TICK = 32;
+	/** Voxel regions a build found empty (unexplored/all-air); skipped until a chunk loads there. */
+	private final Set<Long> emptyVoxelRegions = ConcurrentHashMap.newKeySet();
 
 	private volatile LodWorld world;
 	private volatile LodStorage storage;
@@ -134,6 +136,7 @@ public final class HorizonLod {
 	 */
 	public void onConfigChanged() {
 		emptyRenderRegions.clear();
+		emptyVoxelRegions.clear();
 		dirtyRenderRegions.clear();
 		RenderSystem.recordRenderCall(renderer::clear);
 		RenderSystem.recordRenderCall(voxelRenderer::clear);
@@ -204,6 +207,15 @@ public final class HorizonLod {
 		}
 		if (HorizonConfig.get().isVoxelEngine()) {
 			voxelEngine.onChunkLoad(level, chunk);
+			// New data in this column: let its regions (one per level) be
+			// re-scheduled even if a prior build found them empty.
+			int cbx = chunk.getPos().getMinBlockX();
+			int cbz = chunk.getPos().getMinBlockZ();
+			for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL; lvl++) {
+				int span = VoxelRegionKey.regionSpanBlocks(lvl);
+				emptyVoxelRegions.remove(VoxelRegionKey.pack(lvl,
+					Math.floorDiv(cbx, span), Math.floorDiv(cbz, span)));
+			}
 			return;
 		}
 		ensureWorld(level);
@@ -331,6 +343,7 @@ public final class HorizonLod {
 		}
 		RenderSystem.recordRenderCall(renderer::clear);
 		RenderSystem.recordRenderCall(voxelRenderer::clear);
+		emptyVoxelRegions.clear();
 	}
 
 	/** F3 overlay: the voxel engine's per-level section counters (M1 acceptance line). */
@@ -359,8 +372,6 @@ public final class HorizonLod {
 		}
 		final double camX = mc.player.getX();
 		final double camZ = mc.player.getZ();
-		net.irisshaders.iris.horizon.voxel.VoxelDiag.checkPlayer(store,
-			(int) Math.floor(camX), (int) Math.floor(mc.player.getY()), (int) Math.floor(camZ));
 		RenderSystem.recordRenderCall(() -> voxelRenderer.evict(camX, camZ));
 
 		final int worldMinY = level.getMinBuildHeight();
@@ -370,8 +381,8 @@ public final class HorizonLod {
 		int rdBlocks = VoxelLodSelector.renderDistanceBlocks();
 		int lodDist = HorizonConfig.get().getLodDistanceBlocks();
 
-		int scheduled = 0;
-		for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL && scheduled < MAX_VOXEL_SCHEDULED_PER_TICK; lvl++) {
+		int[] scheduled = {0};
+		for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL && scheduled[0] < MAX_VOXEL_SCHEDULED_PER_TICK; lvl++) {
 			int span = VoxelRegionKey.regionSpanBlocks(lvl);
 			int radius = VoxelLodSelector.radiusRegions(lvl);
 			if (lvl == 0) {
@@ -381,41 +392,74 @@ public final class HorizonLod {
 			}
 			int camRx = Math.floorDiv((int) Math.floor(camX), span);
 			int camRz = Math.floorDiv((int) Math.floor(camZ), span);
-			for (int dz = -radius; dz <= radius && scheduled < MAX_VOXEL_SCHEDULED_PER_TICK; dz++) {
-				for (int dx = -radius; dx <= radius && scheduled < MAX_VOXEL_SCHEDULED_PER_TICK; dx++) {
-					int rx = camRx + dx;
-					int rz = camRz + dz;
-					double ccx = (rx + 0.5) * span - camX;
-					double ccz = (rz + 0.5) * span - camZ;
-					double dist = Math.sqrt(ccx * ccx + ccz * ccz);
-					if (dist > lodDist + span) {
-						continue;
+			// Sweep from the camera OUTWARD, ring by ring: the near regions (the
+			// ones that actually hold data and the player can see) get the
+			// per-tick budget first. A center-anchored square sweep spent the
+			// whole budget on the far empty corner every tick and never reached
+			// the player's own region.
+			for (int ring = 0; ring <= radius && scheduled[0] < MAX_VOXEL_SCHEDULED_PER_TICK; ring++) {
+				if (ring == 0) {
+					trySchedule(store, colors, palettes, lvl, camRx, camRz, span, camX, camZ,
+						rdBlocks, lodDist, worldMinY, worldMaxY, scheduled);
+					continue;
+				}
+				for (int i = -ring; i <= ring && scheduled[0] < MAX_VOXEL_SCHEDULED_PER_TICK; i++) {
+					trySchedule(store, colors, palettes, lvl, camRx + i, camRz - ring, span, camX, camZ,
+						rdBlocks, lodDist, worldMinY, worldMaxY, scheduled);
+					trySchedule(store, colors, palettes, lvl, camRx + i, camRz + ring, span, camX, camZ,
+						rdBlocks, lodDist, worldMinY, worldMaxY, scheduled);
+					if (Math.abs(i) != ring) {
+						trySchedule(store, colors, palettes, lvl, camRx - ring, camRz + i, span, camX, camZ,
+							rdBlocks, lodDist, worldMinY, worldMaxY, scheduled);
+						trySchedule(store, colors, palettes, lvl, camRx + ring, camRz + i, span, camX, camZ,
+							rdBlocks, lodDist, worldMinY, worldMaxY, scheduled);
 					}
-					if (VoxelLodSelector.levelFor(dist, rdBlocks) != lvl) {
-						continue; // a coarser/finer level owns this region
-					}
-					final long key = VoxelRegionKey.pack(lvl, rx, rz);
-					if (voxelRenderer.hasMesh(key) || !voxelRenderer.markScheduled(key)) {
-						continue;
-					}
-					final int frx = rx, frz = rz, flvl = lvl, fmin = worldMinY, fmax = worldMaxY;
-					final int jobEpoch = voxelRenderer.currentEpoch();
-					worker.submit(() -> {
-						try {
-							VoxelMesher.MeshData data = VoxelMesher.buildRegion(store, colors, palettes,
-								flvl, frx, frz, key, fmin, fmax);
-							voxelRenderer.submit(key, data, jobEpoch);
-						} catch (Throwable t) {
-							voxelRenderer.submit(key, null, jobEpoch);
-							Iris.logger.error("Horizon: voxel mesh build failed for L" + flvl
-								+ " region " + frx + "," + frz, t);
-						}
-					});
-					net.irisshaders.iris.horizon.voxel.VoxelDiag.submitted.incrementAndGet();
-					scheduled++;
 				}
 			}
 		}
+	}
+
+	/** Queues one region's build if it belongs to {@code lvl}, has data-bearing potential, and is not already meshed/empty. */
+	private void trySchedule(VoxelStore store, VoxelColorTable colors, VoxelPalettes palettes,
+							 int lvl, int rx, int rz, int span, double camX, double camZ,
+							 int rdBlocks, int lodDist, int worldMinY, int worldMaxY, int[] scheduled) {
+		if (scheduled[0] >= MAX_VOXEL_SCHEDULED_PER_TICK) {
+			return;
+		}
+		double ccx = (rx + 0.5) * span - camX;
+		double ccz = (rz + 0.5) * span - camZ;
+		double dist = Math.sqrt(ccx * ccx + ccz * ccz);
+		if (dist > lodDist + span) {
+			return;
+		}
+		if (VoxelLodSelector.levelFor(dist, rdBlocks) != lvl) {
+			return; // a coarser/finer level owns this region
+		}
+		final long key = VoxelRegionKey.pack(lvl, rx, rz);
+		if (voxelRenderer.hasMesh(key) || emptyVoxelRegions.contains(key) || !voxelRenderer.markScheduled(key)) {
+			return;
+		}
+		final int frx = rx, frz = rz, flvl = lvl, fmin = worldMinY, fmax = worldMaxY;
+		final int jobEpoch = voxelRenderer.currentEpoch();
+		worker.submit(() -> {
+			try {
+				VoxelMesher.MeshData data = VoxelMesher.buildRegion(store, colors, palettes,
+					flvl, frx, frz, key, fmin, fmax);
+				if (data == null) {
+					// No data here (unexplored / all-air). Remember it so the
+					// budget stops re-scheduling it every tick; a chunk load in
+					// this area clears the flag (onChunkLoad) so it retries.
+					emptyVoxelRegions.add(key);
+				}
+				voxelRenderer.submit(key, data, jobEpoch);
+			} catch (Throwable t) {
+				voxelRenderer.submit(key, null, jobEpoch);
+				Iris.logger.error("Horizon: voxel mesh build failed for L" + flvl
+					+ " region " + frx + "," + frz, t);
+			}
+		});
+		net.irisshaders.iris.horizon.voxel.VoxelDiag.submitted.incrementAndGet();
+		scheduled[0]++;
 	}
 
 	private void onClientTick(ClientTickEvent.Post event) {

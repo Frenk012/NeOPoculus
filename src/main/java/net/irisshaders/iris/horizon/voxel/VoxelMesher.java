@@ -76,7 +76,7 @@ public final class VoxelMesher {
 									if (cy > maxSolidCy) maxSolidCy = cy;
 								}
 							}
-							net.irisshaders.iris.Iris.logger.info("VOXDIAG section sy=" + sy
+							net.irisshaders.iris.Iris.logger.info("VOXDIAG section L" + level + " sy=" + sy
 								+ " coreNonAir=" + snap.coreNonAir()
 								+ " solidLayers=" + solid + " cyRange=[" + minSolidCy + ".." + maxSolidCy + "]"
 								+ " worldYbase=" + (sy * N));

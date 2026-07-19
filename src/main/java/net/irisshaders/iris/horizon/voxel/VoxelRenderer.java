@@ -33,6 +33,18 @@ public final class VoxelRenderer {
 	private final FrustumIntersection frustum = new FrustumIntersection();
 	private final float[] mvpArray = new float[16];
 
+	// Per-chunk coverage mask: 255 where a real chunk is loaded, 0 elsewhere.
+	// The fragment shader discards LOD where covered (dithered), so LOD never
+	// draws over loaded terrain even when the loaded radius exceeds the client
+	// render distance. Ported from the classic LodRenderer.
+	private static final int MASK_SIZE = 160;
+	private int maskTexture;
+	private final java.nio.ByteBuffer maskBuffer = org.lwjgl.system.MemoryUtil.memAlloc(MASK_SIZE * MASK_SIZE);
+	private final byte[] maskData = new byte[MASK_SIZE * MASK_SIZE];
+	private int maskOriginX, maskOriginZ;
+	private int maskCenterX = Integer.MIN_VALUE, maskCenterZ = Integer.MIN_VALUE;
+	private int maskAge;
+
 	// Diagnostics surfaced on the F3 line.
 	private volatile int drawnLastFrame;
 	private volatile long totalUploaded;
@@ -142,9 +154,16 @@ public final class VoxelRenderer {
 		frustum.set(mvp);
 		mvp.get(mvpArray);
 
+		int rdChunks = mc.options.getEffectiveRenderDistance();
+		int camChunkX = Math.floorDiv((int) Math.floor(camX), 16);
+		int camChunkZ = Math.floorDiv((int) Math.floor(camZ), 16);
+		updateChunkMask(mc.level, camChunkX, camChunkZ, rdChunks + 2);
+
 		int prevProgram = GL33C.glGetInteger(GL33C.GL_CURRENT_PROGRAM);
 		int prevVao = GL33C.glGetInteger(GL33C.GL_VERTEX_ARRAY_BINDING);
 		int prevArrayBuffer = GL33C.glGetInteger(GL33C.GL_ARRAY_BUFFER_BINDING);
+		int prevActiveTex = GL33C.glGetInteger(GL33C.GL_ACTIVE_TEXTURE);
+		int prevTex0 = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
 		boolean prevCull = GL33C.glIsEnabled(GL33C.GL_CULL_FACE);
 		boolean prevBlend = GL33C.glIsEnabled(GL33C.GL_BLEND);
 
@@ -156,15 +175,18 @@ public final class VoxelRenderer {
 		GL33C.glEnable(GL33C.GL_POLYGON_OFFSET_FILL);
 		GL33C.glPolygonOffset(3.0f, 3.0f);
 
+		GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
+		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
 		shader.bind();
 		shader.setFrame(mvpArray, fogColor, fogStart, fogEnd, skyFactor);
+		shader.setMask(0, (float) (camX / 16.0 - maskOriginX), (float) (camZ / 16.0 - maskOriginZ), MASK_SIZE);
+		shader.setUseMask(true);
 
 		double maxDist = lodDist + 192.0;
 		double maxDistSq = maxDist * maxDist;
 		float relY = (float) -camY;
 		int drawn = 0;
 
-		int rdBlocks = VoxelLodSelector.renderDistanceBlocks();
 		for (VoxelRegionMesh mesh : meshes.values()) {
 			int level = mesh.level;
 			int span = VoxelRegionKey.regionSpanBlocks(level);
@@ -174,14 +196,6 @@ public final class VoxelRenderer {
 			double dcz = originZ + span * 0.5 - camZ;
 			double centerDistSq = dcx * dcx + dcz * dcz;
 			if (centerDistSq > maxDistSq) {
-				continue;
-			}
-			// Skip regions entirely inside the loaded render distance: real
-			// terrain draws there. Straddling collar regions still draw (real
-			// terrain wins the depth test via polygon offset), so the seam at
-			// the render-distance edge stays covered.
-			double centerDist = Math.sqrt(centerDistSq);
-			if (centerDist + span * 0.7071 < rdBlocks) {
 				continue;
 			}
 			float ox = (float) (originX - camX);
@@ -203,9 +217,85 @@ public final class VoxelRenderer {
 		if (prevBlend) {
 			GL33C.glEnable(GL33C.GL_BLEND);
 		}
+		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prevTex0);
+		GL33C.glActiveTexture(prevActiveTex);
 		GL33C.glBindVertexArray(prevVao);
 		GL33C.glBindBuffer(GL33C.GL_ARRAY_BUFFER, prevArrayBuffer);
 		GL33C.glUseProgram(prevProgram);
+	}
+
+	/**
+	 * Rebuilds the per-chunk coverage mask around the camera and uploads it,
+	 * throttled to a few times a second. A chunk is covered when the client
+	 * actually has it, so the LOD boundary follows what is really loaded.
+	 * Ported from LodRenderer.updateChunkMask.
+	 */
+	private void updateChunkMask(net.minecraft.client.multiplayer.ClientLevel level, int camChunkX, int camChunkZ, int rdChunks) {
+		boolean moved = camChunkX != maskCenterX || camChunkZ != maskCenterZ;
+		maskAge++;
+		boolean stale = maskTexture == 0 || (moved && maskAge >= 3) || maskAge >= 8;
+		if (!stale) {
+			return;
+		}
+		maskAge = 0;
+		maskCenterX = camChunkX;
+		maskCenterZ = camChunkZ;
+		maskOriginX = camChunkX - MASK_SIZE / 2;
+		maskOriginZ = camChunkZ - MASK_SIZE / 2;
+
+		var chunkSource = level.getChunkSource();
+		java.util.Arrays.fill(maskData, (byte) 0);
+		int rd = Math.min(MASK_SIZE / 2 - 1, rdChunks);
+		int rdSq = rd * rd;
+		int jMin = Math.max(0, MASK_SIZE / 2 - rd);
+		int jMax = Math.min(MASK_SIZE - 1, MASK_SIZE / 2 + rd);
+		for (int j = jMin; j <= jMax; j++) {
+			int cz = maskOriginZ + j;
+			int dz = cz - camChunkZ;
+			int dxMax = (int) Math.sqrt((double) (rdSq - dz * dz));
+			int iMin = Math.max(0, MASK_SIZE / 2 - dxMax);
+			int iMax = Math.min(MASK_SIZE - 1, MASK_SIZE / 2 + dxMax);
+			for (int i = iMin; i <= iMax; i++) {
+				int cx = maskOriginX + i;
+				if (chunkSource.hasChunk(cx, cz)) {
+					maskData[i + j * MASK_SIZE] = (byte) 255;
+				}
+			}
+		}
+		maskBuffer.clear();
+		maskBuffer.put(maskData).flip();
+
+		int prevTex = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
+		int prevUnpackBuffer = GL33C.glGetInteger(GL33C.GL_PIXEL_UNPACK_BUFFER_BINDING);
+		int prevRowLength = GL33C.glGetInteger(GL33C.GL_UNPACK_ROW_LENGTH);
+		int prevSkipRows = GL33C.glGetInteger(GL33C.GL_UNPACK_SKIP_ROWS);
+		int prevSkipPixels = GL33C.glGetInteger(GL33C.GL_UNPACK_SKIP_PIXELS);
+		int prevAlignment = GL33C.glGetInteger(GL33C.GL_UNPACK_ALIGNMENT);
+		GL33C.glBindBuffer(GL33C.GL_PIXEL_UNPACK_BUFFER, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ROW_LENGTH, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_ROWS, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_PIXELS, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 1);
+
+		boolean firstTime = maskTexture == 0;
+		if (firstTime) {
+			maskTexture = GL33C.glGenTextures();
+		}
+		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
+		if (firstTime) {
+			GL33C.glTexImage2D(GL33C.GL_TEXTURE_2D, 0, GL33C.GL_R8, MASK_SIZE, MASK_SIZE, 0, GL33C.GL_RED, GL33C.GL_UNSIGNED_BYTE, (java.nio.ByteBuffer) null);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_LINEAR);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_LINEAR);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_S, GL33C.GL_CLAMP_TO_EDGE);
+			GL33C.glTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_WRAP_T, GL33C.GL_CLAMP_TO_EDGE);
+		}
+		GL33C.glTexSubImage2D(GL33C.GL_TEXTURE_2D, 0, 0, 0, MASK_SIZE, MASK_SIZE, GL33C.GL_RED, GL33C.GL_UNSIGNED_BYTE, maskBuffer);
+		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prevTex);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ROW_LENGTH, prevRowLength);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_ROWS, prevSkipRows);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_PIXELS, prevSkipPixels);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, prevAlignment);
+		GL33C.glBindBuffer(GL33C.GL_PIXEL_UNPACK_BUFFER, prevUnpackBuffer);
 	}
 
 	/** Render thread: pipeline destroy hook (no per-pipeline GL held in M3; kept for symmetry). */
@@ -227,6 +317,12 @@ public final class VoxelRenderer {
 			mesh.delete();
 		}
 		meshes.clear();
+		if (maskTexture != 0) {
+			GL33C.glDeleteTextures(maskTexture);
+			maskTexture = 0;
+			maskCenterX = Integer.MIN_VALUE;
+			maskCenterZ = Integer.MIN_VALUE;
+		}
 	}
 
 	/** Render thread: full teardown at client shutdown. */

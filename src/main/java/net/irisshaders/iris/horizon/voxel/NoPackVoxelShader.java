@@ -41,9 +41,28 @@ public final class NoPackVoxelShader {
 		uniform float u_fogStart;
 		uniform float u_fogEnd;
 		uniform float u_skyFactor;
+		uniform sampler2D u_chunkMask;
+		uniform vec2 u_maskRel;
+		uniform float u_maskTexels;
+		uniform int u_useMask;
 		out vec4 fragColor;
 		const float faceShade[6] = float[6](0.5, 1.0, 0.8, 0.8, 0.6, 0.6);
 		void main() {
+			// Cut the LOD wherever a real chunk is loaded (per-chunk coverage
+			// mask, dithered for a soft chunk-aligned boundary). This is what
+			// keeps distant LOD from drawing on top of loaded terrain, since
+			// the loaded radius can exceed the client render distance.
+			if (u_useMask == 1) {
+				vec2 uv = (vRelPos.xz / 16.0 + u_maskRel) / u_maskTexels;
+				float covered = 0.0;
+				if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
+					covered = texture(u_chunkMask, uv).r;
+				}
+				float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+				if (covered > mix(0.3, 0.7, n)) {
+					discard;
+				}
+			}
 			float block = float((vLight >> 4u) & 15u) / 15.0;
 			float sky   = float(vLight & 15u) / 15.0;
 			float l = 0.05 + 0.95 * max(block, sky * u_skyFactor);
@@ -56,6 +75,7 @@ public final class NoPackVoxelShader {
 	private int program;
 	private boolean failed;
 	private int uMvp, uOffset, uFogColor, uFogStart, uFogEnd, uSkyFactor;
+	private int uChunkMask, uMaskRel, uMaskTexels, uUseMask;
 
 	/** @return true if the program is ready to bind. Render thread. */
 	public boolean ensure() {
@@ -86,6 +106,10 @@ public final class NoPackVoxelShader {
 			uFogStart = GL33C.glGetUniformLocation(program, "u_fogStart");
 			uFogEnd = GL33C.glGetUniformLocation(program, "u_fogEnd");
 			uSkyFactor = GL33C.glGetUniformLocation(program, "u_skyFactor");
+			uChunkMask = GL33C.glGetUniformLocation(program, "u_chunkMask");
+			uMaskRel = GL33C.glGetUniformLocation(program, "u_maskRel");
+			uMaskTexels = GL33C.glGetUniformLocation(program, "u_maskTexels");
+			uUseMask = GL33C.glGetUniformLocation(program, "u_useMask");
 			return true;
 		} catch (Exception e) {
 			failed = true;
@@ -108,6 +132,17 @@ public final class NoPackVoxelShader {
 
 	public void setOffset(float ox, float oy, float oz) {
 		GL33C.glUniform3f(uOffset, ox, oy, oz);
+	}
+
+	/** Coverage mask on texture unit {@code maskUnit}; {@code maskRel} = camera chunk offset from mask origin. */
+	public void setMask(int maskUnit, float maskRelX, float maskRelZ, float maskTexels) {
+		GL33C.glUniform1i(uChunkMask, maskUnit);
+		GL33C.glUniform2f(uMaskRel, maskRelX, maskRelZ);
+		GL33C.glUniform1f(uMaskTexels, maskTexels);
+	}
+
+	public void setUseMask(boolean use) {
+		GL33C.glUniform1i(uUseMask, use ? 1 : 0);
 	}
 
 	private static int compile(int type, String src) {

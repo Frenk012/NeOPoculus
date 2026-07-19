@@ -262,6 +262,16 @@ public final class VoxelRenderer {
 				}
 			}
 		}
+		if (totalUploaded < 3 || (maskCenterX & 15) == 0) {
+			int covered = 0;
+			for (byte b : maskData) {
+				if (b != 0) {
+					covered++;
+				}
+			}
+			Iris.logger.info("VOXDIAG mask rebuild: " + covered + " chunks covered (rd=" + rdChunks
+				+ ", origin " + maskOriginX + "," + maskOriginZ + ")");
+		}
 		maskBuffer.clear();
 		maskBuffer.put(maskData).flip();
 

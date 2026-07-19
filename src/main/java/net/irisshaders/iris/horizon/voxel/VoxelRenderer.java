@@ -88,9 +88,9 @@ public final class VoxelRenderer {
 			if (old != null) {
 				old.delete();
 			}
-			if (totalUploaded == 0) {
-				Iris.logger.info("Horizon: first voxel mesh uploaded (L" + data.level()
-					+ " " + data.quads() + " quads); voxel render path is live");
+			if (totalUploaded < 16) {
+				Iris.logger.info("VOXDIAG mesh #" + totalUploaded + " L" + data.level()
+					+ " quads=" + data.quads());
 			}
 			totalUploaded++;
 			inFlight.remove(key);
@@ -166,6 +166,9 @@ public final class VoxelRenderer {
 
 		for (VoxelRegionMesh mesh : meshes.values()) {
 			int level = mesh.level;
+			if (level != 0) {
+				continue; // DIAG: L0-only to isolate the line artifact
+			}
 			int span = VoxelRegionKey.regionSpanBlocks(level);
 			double originX = (double) VoxelRegionKey.rx(mesh.regionKey) * span;
 			double originZ = (double) VoxelRegionKey.rz(mesh.regionKey) * span;

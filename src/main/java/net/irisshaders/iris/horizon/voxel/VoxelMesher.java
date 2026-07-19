@@ -39,7 +39,6 @@ public final class VoxelMesher {
 		int maxSy = SectionKey.blockToSection(worldMaxY - 1, level);
 		int cellSize = 1 << level;
 
-		VoxelDiag.buildInvoked.incrementAndGet();
 		SectionSnapshot snap = new SectionSnapshot();
 		long[] faceKey = new long[N * N];
 
@@ -56,30 +55,6 @@ public final class VoxelMesher {
 					for (int sy = minSy; sy <= maxSy && !capped; sy++) {
 						if (!snap.capture(store, level, sx, sy, sz)) {
 							continue;
-						}
-						if (VoxelDiag.sectionDumps.get() < 10) {
-							VoxelDiag.sectionDumps.incrementAndGet();
-							int solid = 0, minSolidCy = 99, maxSolidCy = -1;
-							for (int cy = 0; cy < N; cy++) {
-								boolean rowHas = false;
-								for (int cz = 0; cz < N && !rowHas; cz++) {
-									for (int cxx = 0; cxx < N; cxx++) {
-										if (!VoxelCell.isAir(snap.cell(cxx, cy, cz))) {
-											rowHas = true;
-											break;
-										}
-									}
-								}
-								if (rowHas) {
-									solid++;
-									if (cy < minSolidCy) minSolidCy = cy;
-									if (cy > maxSolidCy) maxSolidCy = cy;
-								}
-							}
-							net.irisshaders.iris.Iris.logger.info("VOXDIAG section L" + level + " sy=" + sy
-								+ " coreNonAir=" + snap.coreNonAir()
-								+ " solidLayers=" + solid + " cyRange=[" + minSolidCy + ".." + maxSolidCy + "]"
-								+ " worldYbase=" + (sy * N));
 						}
 						for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
 							for (int w = 0; w < N; w++) {
@@ -151,7 +126,6 @@ public final class VoxelMesher {
 			throw t;
 		}
 
-		VoxelDiag.quadsEmitted.addAndGet(quads);
 		if (quads == 0) {
 			MemoryUtil.memFree(buf);
 			return null;
@@ -263,8 +237,6 @@ public final class VoxelMesher {
 		int baseZ = szLocal * N;
 		int baseWorldYCells = sy * N;
 		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
-		boolean dump = VoxelDiag.quadDumps.get() < 8 && face == VoxelConstants.FACE_POS_Y;
-		StringBuilder sb = dump ? new StringBuilder("VOXDIAG quad face=" + face + " su=" + su + " sv=" + sv + ":") : null;
 		for (int i = 0; i < 4; i++) {
 			int rlx = (baseX + cx[i]) * cellSize;
 			int rlz = (baseZ + cz[i]) * cellSize;
@@ -272,15 +244,8 @@ public final class VoxelMesher {
 			int posY = worldY + VoxelConstants.Y_BIAS;
 			minY = Math.min(minY, worldY);
 			maxY = Math.max(maxY, worldY);
-			if (dump) {
-				sb.append(" (").append(rlx).append(',').append(worldY).append(',').append(rlz).append(')');
-			}
 			LodVertexFormatV2.writeVertex(buf, rlx, posY, rlz, lightMeta, rgb,
 				0 /*material*/, face, 0 /*atlasSlot*/, biome, face /*faceMeta*/, 0 /*flags*/);
-		}
-		if (dump) {
-			VoxelDiag.quadDumps.incrementAndGet();
-			net.irisshaders.iris.Iris.logger.info(sb.toString());
 		}
 		return new float[]{minY, maxY};
 	}

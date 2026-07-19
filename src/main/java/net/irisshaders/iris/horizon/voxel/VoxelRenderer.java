@@ -88,9 +88,9 @@ public final class VoxelRenderer {
 			if (old != null) {
 				old.delete();
 			}
-			if (totalUploaded < 16) {
-				Iris.logger.info("VOXDIAG mesh #" + totalUploaded + " L" + data.level()
-					+ " quads=" + data.quads());
+			if (totalUploaded == 0) {
+				Iris.logger.info("Horizon: voxel render path live (first mesh L" + data.level()
+					+ ", " + data.quads() + " quads)");
 			}
 			totalUploaded++;
 			inFlight.remove(key);
@@ -164,11 +164,9 @@ public final class VoxelRenderer {
 		float relY = (float) -camY;
 		int drawn = 0;
 
+		int rdBlocks = VoxelLodSelector.renderDistanceBlocks();
 		for (VoxelRegionMesh mesh : meshes.values()) {
 			int level = mesh.level;
-			if (level != 0) {
-				continue; // DIAG: L0-only to isolate the line artifact
-			}
 			int span = VoxelRegionKey.regionSpanBlocks(level);
 			double originX = (double) VoxelRegionKey.rx(mesh.regionKey) * span;
 			double originZ = (double) VoxelRegionKey.rz(mesh.regionKey) * span;
@@ -178,9 +176,14 @@ public final class VoxelRenderer {
 			if (centerDistSq > maxDistSq) {
 				continue;
 			}
-			// No coverage cull in M3: LOD under loaded chunks is occluded by
-			// real terrain via the depth test + polygon offset, and drawing it
-			// everywhere keeps the seam at the render-distance edge visible.
+			// Skip regions entirely inside the loaded render distance: real
+			// terrain draws there. Straddling collar regions still draw (real
+			// terrain wins the depth test via polygon offset), so the seam at
+			// the render-distance edge stays covered.
+			double centerDist = Math.sqrt(centerDistSq);
+			if (centerDist + span * 0.7071 < rdBlocks) {
+				continue;
+			}
 			float ox = (float) (originX - camX);
 			float oz = (float) (originZ - camZ);
 			if (!frustum.testAab(ox, mesh.minY + relY, oz, ox + span, mesh.maxY + relY, oz + span)) {

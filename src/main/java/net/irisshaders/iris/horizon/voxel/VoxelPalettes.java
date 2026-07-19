@@ -691,8 +691,6 @@ public final class VoxelPalettes {
 	 * because modded overrides may throw off-thread — then occluders count
 	 * as 15 and everything else as barely-there 1.
 	 */
-	private static final java.util.concurrent.atomic.AtomicInteger opacityLogged = new java.util.concurrent.atomic.AtomicInteger();
-
 	private static byte computeOpacity(BlockState state, boolean leafLike) {
 		if (state.isAir()) {
 			return 0;
@@ -700,27 +698,19 @@ public final class VoxelPalettes {
 		if (leafLike) {
 			return 15;
 		}
-		byte result;
 		try {
 			// A full opaque occluding cube hides the face behind it → opacity 15.
 			// canOcclude() is the reliable signal here: getLightBlock with an
 			// EmptyBlockGetter reports 0 for most solid blocks, which made the
 			// mesher emit an internal face at every block-type boundary.
 			if (state.canOcclude()) {
-				result = 15;
-			} else {
-				int light = state.getLightBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
-				result = (byte) Math.max(0, Math.min(14, light));
+				return 15;
 			}
+			int light = state.getLightBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+			return (byte) Math.max(0, Math.min(14, light));
 		} catch (Throwable t) {
-			result = (byte) (state.canOcclude() ? 15 : 1);
+			return (byte) (state.canOcclude() ? 15 : 1);
 		}
-		if (opacityLogged.get() < 12) {
-			opacityLogged.incrementAndGet();
-			Iris.logger.info("VOXDIAG opacity " + state.getBlock().getName().getString()
-				+ " canOcclude=" + state.canOcclude() + " -> " + result);
-		}
-		return result;
 	}
 
 	/** Tag lookups can throw before tags are bound; treat that as not-leaf. */

@@ -353,7 +353,6 @@ public final class HorizonLod {
 			event.getLeft().add("Horizon/voxel render: meshes " + voxelRenderer.meshCount()
 				+ " drawn " + voxelRenderer.drawnLastFrame()
 				+ " built " + voxelRenderer.totalUploaded());
-			event.getLeft().add(net.irisshaders.iris.horizon.voxel.VoxelDiag.line());
 		}
 	}
 
@@ -458,7 +457,6 @@ public final class HorizonLod {
 					+ " region " + frx + "," + frz, t);
 			}
 		});
-		net.irisshaders.iris.horizon.voxel.VoxelDiag.submitted.incrementAndGet();
 		scheduled[0]++;
 	}
 

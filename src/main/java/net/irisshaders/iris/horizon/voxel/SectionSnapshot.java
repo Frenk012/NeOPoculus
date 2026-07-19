@@ -20,6 +20,7 @@ public final class SectionSnapshot {
 
 	private final long[] cells = new long[DIM * DIM * DIM];
 	private final long[] plane = new long[VoxelConstants.SECTION_PLANE_CELLS];
+	private final long[] coreScratch = new long[VoxelConstants.SECTION_CELLS];
 	private long coreNonAir;
 
 	private static int idx(int x, int y, int z) {
@@ -30,20 +31,9 @@ public final class SectionSnapshot {
 	public boolean capture(VoxelStore store, int level, int sx, int sy, int sz) {
 		long coreKey = SectionKey.pack(level, sx, sy, sz);
 		VoxelSection core = store.acquire(coreKey);
-		if (core == null) {
-			if (VoxelDiag.loggedProbe.compareAndSet(false, true)) {
-				long sample = store.hot().sampleKey();
-				net.irisshaders.iris.Iris.logger.info("VOXDIAG mesh probe " + SectionKey.describe(coreKey)
-					+ " -> null; hot total=" + store.hot().totalSections()
-					+ " sample=" + (sample == Long.MIN_VALUE ? "none" : SectionKey.describe(sample)));
-			}
-			VoxelDiag.acquireNull.incrementAndGet();
+		if (core == null || core.nonAirCount() == 0) {
 			return false;
 		}
-		if (core.nonAirCount() == 0) {
-			return false;
-		}
-		VoxelDiag.sectionsCaptured.incrementAndGet();
 		java.util.Arrays.fill(cells, VoxelConstants.AIR_CELL);
 		coreNonAir = core.nonAirCount();
 		if (!fillCore(core)) {
@@ -59,21 +49,25 @@ public final class SectionSnapshot {
 		return true;
 	}
 
-	/** Copies the 32³ core, row by row (each x-run is contiguous in both layouts). */
+	/**
+	 * Copies the 32³ core in one bulk read (a single monitor hold), then
+	 * scatters its rows into the 34³ layout — 1024 arraycopies, not 32768
+	 * synchronized {@code cellAt} calls. A recycled section (concurrent
+	 * eviction) reads as absent.
+	 */
 	private boolean fillCore(VoxelSection core) {
 		try {
-			for (int y = 0; y < N; y++) {
-				for (int z = 0; z < N; z++) {
-					int base = idx(0, y, z);
-					for (int x = 0; x < N; x++) {
-						cells[base + x] = core.cellAt(x, y, z);
-					}
-				}
-			}
-			return true;
+			core.copyCellsInto(coreScratch);
 		} catch (NullPointerException recycled) {
 			return false;
 		}
+		for (int y = 0; y < N; y++) {
+			for (int z = 0; z < N; z++) {
+				System.arraycopy(coreScratch, (y << (2 * VoxelConstants.SECTION_BITS)) | (z << VoxelConstants.SECTION_BITS),
+					cells, idx(0, y, z), N);
+			}
+		}
+		return true;
 	}
 
 	/**

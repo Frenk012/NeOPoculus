@@ -180,11 +180,17 @@ public final class VoxelMesher {
 				// origin cell's value — approximate across a merged plate but
 				// real (day/night, caves), unlike the old fixed-bright value.
 				faceKey[v * N + u] = c & ~LIGHT_MASK;
-				// Light from the adjacent (air/translucent) cell, vanilla-style;
-				// a missing-neighbour plane (AIR_CELL) falls back to the solid
-				// cell's own light so frontier faces are not pitch black.
-				long lightSource = VoxelCell.isAir(n) && (n & VoxelConstants.LIGHT_MASK) == 0 ? c : n;
-				faceLight[v * N + u] = (VoxelCell.blockLight(lightSource) << 4) | VoxelCell.skyLight(lightSource);
+				// Light from the adjacent (air/translucent) cell, vanilla-style.
+				int bl = VoxelCell.blockLight(n);
+				int sl = VoxelCell.skyLight(n);
+				if (n == VoxelConstants.AIR_CELL) {
+					// Missing-neighbour plane (a not-yet-meshed neighbour region
+					// at the frontier): treat as open sky so the temporary
+					// boundary wall is lit instead of pitch black. Real air with
+					// captured light, and dark cave air, keep their own value.
+					sl = 15;
+				}
+				faceLight[v * N + u] = (bl << 4) | sl;
 				any = true;
 			}
 		}

@@ -65,7 +65,7 @@ public final class NoPackVoxelShader {
 			}
 			float block = float((vLight >> 4u) & 15u) / 15.0;
 			float sky   = float(vLight & 15u) / 15.0;
-			float l = 0.05 + 0.95 * max(block, sky * u_skyFactor);
+			float l = 0.1 + 0.9 * max(block, sky * u_skyFactor);
 			vec3 rgb = vColor.rgb * l * faceShade[vFace];
 			float f = clamp((length(vRelPos.xz) - u_fogStart) / (u_fogEnd - u_fogStart), 0.0, 1.0);
 			fragColor = vec4(mix(rgb, u_fogColor.rgb, f), 1.0);

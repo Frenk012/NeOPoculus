@@ -57,6 +57,30 @@ public final class VoxelMesher {
 						if (!snap.capture(store, level, sx, sy, sz)) {
 							continue;
 						}
+						if (VoxelDiag.sectionDumps.get() < 10) {
+							VoxelDiag.sectionDumps.incrementAndGet();
+							int solid = 0, minSolidCy = 99, maxSolidCy = -1;
+							for (int cy = 0; cy < N; cy++) {
+								boolean rowHas = false;
+								for (int cz = 0; cz < N && !rowHas; cz++) {
+									for (int cxx = 0; cxx < N; cxx++) {
+										if (!VoxelCell.isAir(snap.cell(cxx, cy, cz))) {
+											rowHas = true;
+											break;
+										}
+									}
+								}
+								if (rowHas) {
+									solid++;
+									if (cy < minSolidCy) minSolidCy = cy;
+									if (cy > maxSolidCy) maxSolidCy = cy;
+								}
+							}
+							net.irisshaders.iris.Iris.logger.info("VOXDIAG section sy=" + sy
+								+ " coreNonAir=" + snap.coreNonAir()
+								+ " solidLayers=" + solid + " cyRange=[" + minSolidCy + ".." + maxSolidCy + "]"
+								+ " worldYbase=" + (sy * N));
+						}
 						for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
 							for (int w = 0; w < N; w++) {
 								if (!buildLayer(snap, palettes, face, w, faceKey)) {

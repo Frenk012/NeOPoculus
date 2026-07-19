@@ -50,9 +50,13 @@ final class VoxelIngest {
 
 	/**
 	 * Merges one snapshot into the world at all five levels. Worker thread
-	 * only (uses the thread-local {@link ChunkPyramid} scratch).
+	 * only (uses the thread-local {@link ChunkPyramid} scratch). Acquires
+	 * through the {@link VoxelStore} so a target that was packed to WARM or
+	 * evicted to disk is faulted back in and merged into (rather than shadowed
+	 * by a fresh all-air section), and enrols every touched key in the store's
+	 * dirty set so the save cycle persists it.
 	 */
-	static IngestResult ingest(ChunkSnapshotter.ChunkSnapshot snapshot, VoxelWorld world, VoxelPalettes palettes) {
+	static IngestResult ingest(ChunkSnapshotter.ChunkSnapshot snapshot, VoxelStore store, VoxelPalettes palettes) {
 		LongOpenHashSet touched = new LongOpenHashSet();
 		LongOpenHashSet created = new LongOpenHashSet();
 		ChunkPyramid pyramid = ChunkPyramid.scratch();
@@ -61,7 +65,7 @@ final class VoxelIngest {
 
 		for (int i = 0; i < snapshot.sectionCount(); i++) {
 			int sy = snapshot.sectionY(i);
-			if (snapshot.states()[i] == null && !anyResidentTarget(world, cx, sy, cz)) {
+			if (snapshot.states()[i] == null && !anyResidentTarget(store, cx, sy, cz)) {
 				// All-air with nothing resident to clear: skip before even
 				// building the pyramid — the common far-sky case.
 				continue;
@@ -73,7 +77,12 @@ final class VoxelIngest {
 				long key = targetKey(l, cx, sy, cz);
 				VoxelSection section;
 				if (airOnly) {
-					section = world.get(key);
+					// Clear only HOT-resident targets: re-ingesting a mined-out
+					// section must drop its solid cells, but must not fault an
+					// all-air pyramid in from WARM/disk just to write air (a
+					// warm target's stale-solid state self-heals when a real
+					// write next faults it in). Mirrors M1's world.get semantics.
+					section = store.hot().get(key);
 					if (section == null) {
 						continue;
 					}
@@ -81,9 +90,11 @@ final class VoxelIngest {
 					// get-before-acquire to learn whether this write created
 					// the section. A concurrent creator can make both racers
 					// report "created"; the cost is one redundant neighbor
-					// dirtying, never a missed one.
-					boolean existed = world.get(key) != null;
-					section = world.acquireForWrite(key);
+					// dirtying, never a missed one. (The created set is consumed
+					// by the M3 mesher; "existed" is checked against HOT only,
+					// which is exact enough until that consumer lands.)
+					boolean existed = store.hot().get(key) != null;
+					section = store.acquireForWrite(key);
 					if (!existed) {
 						created.add(key);
 					}
@@ -94,6 +105,7 @@ final class VoxelIngest {
 					n, n, n,
 					pyramid.level(l), 0, n, n * n);
 				section.markColumnPopulated(columnCoord(cx, l), columnCoord(cz, l));
+				store.markDirty(key);
 				touched.add(key);
 			}
 		}
@@ -112,10 +124,14 @@ final class VoxelIngest {
 	 * fresh, otherwise-empty section would fabricate terrain the population
 	 * mask says was never captured.
 	 */
-	static boolean applyBlockUpdate(VoxelWorld world, VoxelPalettes palettes, VoxelMipper mipper,
+	static boolean applyBlockUpdate(VoxelStore store, VoxelPalettes palettes, VoxelMipper mipper,
 			BlockPos pos, BlockState newState) {
 		long key = SectionKey.ofBlock(0, pos.getX(), pos.getY(), pos.getZ());
-		VoxelSection section = world.get(key);
+		// acquireBlocking faults the L0 section from WARM/disk if it was evicted
+		// (so an edit to previously-captured terrain lands), but returns null
+		// rather than creating: a lone edit into a never-captured section would
+		// fabricate terrain the population mask says was never seen.
+		VoxelSection section = store.acquireBlocking(key);
 		if (section == null) {
 			return false;
 		}
@@ -130,6 +146,7 @@ final class VoxelIngest {
 		// no-op state change (e.g. rotation-only, collapsed in the palette)
 		// returns false, skipping the remip.
 		if (section.setStateId(idx, palettes.idFor(newState))) {
+			store.markDirty(key);
 			mipper.enqueueRemip(key, idx);
 		}
 		return true;
@@ -148,11 +165,14 @@ final class VoxelIngest {
 	 * caller dirties this section's mesh region when it is nonzero (parents
 	 * surface through {@code VoxelMipper.processRemips}).
 	 */
-	static int applySectionLight(VoxelWorld world, VoxelMipper mipper,
+	static int applySectionLight(VoxelStore store, VoxelMipper mipper,
 			int chunkX, int sectionY, int chunkZ,
 			DataLayer block, DataLayer sky, boolean aboveHighestFilled) {
 		long key = targetKey(0, chunkX, sectionY, chunkZ);
-		VoxelSection section = world.get(key);
+		// Fault the section in if it was evicted (light refresh for previously
+		// captured terrain), but never create: an all-air section with no
+		// capture has no light to refresh.
+		VoxelSection section = store.acquireBlocking(key);
 		if (section == null) {
 			return 0;
 		}
@@ -177,6 +197,9 @@ final class VoxelIngest {
 				}
 			}
 		}
+		if (changed > 0) {
+			store.markDirty(key);
+		}
 		return changed;
 	}
 
@@ -200,9 +223,10 @@ final class VoxelIngest {
 		return chunkCoord & ((2 << level) - 1);
 	}
 
-	private static boolean anyResidentTarget(VoxelWorld world, int cx, int sy, int cz) {
+	private static boolean anyResidentTarget(VoxelStore store, int cx, int sy, int cz) {
+		VoxelWorld hot = store.hot();
 		for (int l = 0; l <= VoxelConstants.MAX_LEVEL; l++) {
-			if (world.get(targetKey(l, cx, sy, cz)) != null) {
+			if (hot.get(targetKey(l, cx, sy, cz)) != null) {
 				return true;
 			}
 		}

@@ -5,15 +5,24 @@ import net.irisshaders.iris.horizon.HorizonConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderGetter;
+import net.minecraft.core.Registry;
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.neoforged.fml.loading.FMLPaths;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -81,15 +90,29 @@ public final class VoxelEngine {
 	 */
 	private final VoxelPalettes palettes = new VoxelPalettes();
 
-	private volatile VoxelWorld world;
 	/**
-	 * Incremental remipper bound to {@link #world}; created and nulled with it
+	 * The two-tier store (HOT/WARM/disk) for the current world; null between
+	 * levels. Replaces M1's bare VoxelWorld — the HOT tier lives inside it
+	 * ({@link VoxelStore#hot()}). Created/nulled only on the client thread.
+	 */
+	private volatile VoxelStore store;
+	/**
+	 * Incremental remipper bound to {@link #store}; created and nulled with it
 	 * (both mutated only on the client thread under {@code this}), so whenever
-	 * {@code world} is non-null on the tick thread this is the matching mipper.
+	 * {@code store} is non-null on the tick thread this is the matching mipper.
 	 */
 	private volatile VoxelMipper mipper;
-	/** Dimension the current VoxelWorld belongs to; guards stray events (classic rule). */
+	/** Dimension the current store belongs to; guards stray events (classic rule). */
 	private volatile ResourceKey<Level> worldDimension;
+	/**
+	 * World id ({@code local_<name>} / {@code server_<ip>} / ...) the shared
+	 * {@link #palettes} were loaded for. A change means a genuinely different
+	 * world, so the palette is cleared and reloaded; a mere dimension switch
+	 * keeps it (palettes are world-scoped, shared across dimensions).
+	 */
+	private volatile String currentWorldId;
+	/** At most one save/evict cycle in flight at a time (design: engine serializes cycles). */
+	private final AtomicBoolean cycleInFlight = new AtomicBoolean();
 
 	/** Chunks awaiting snapshot; drained a few per tick to avoid client-thread spikes. */
 	private final ConcurrentLinkedQueue<LevelChunk> loadQueue = new ConcurrentLinkedQueue<>();
@@ -116,16 +139,16 @@ public final class VoxelEngine {
 
 	/** True when the voxel engine is selected, enabled, and has a live world. */
 	public boolean isActive() {
-		return HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine() && world != null;
+		return HorizonConfig.get().isEnabled() && HorizonConfig.get().isVoxelEngine() && store != null;
 	}
 
 	public VoxelPalettes palettes() {
 		return palettes;
 	}
 
-	/** Residency + dirty tracking for the current dimension; null between levels. M2's store consumes this seam. */
-	public VoxelWorld world() {
-		return world;
+	/** Two-tier store for the current dimension; null between levels. The M3 mesher reads through it. */
+	public VoxelStore store() {
+		return store;
 	}
 
 	// --- Event entry points (client thread, via HorizonLod) ---
@@ -146,8 +169,7 @@ public final class VoxelEngine {
 	 * from the worker that will apply the update.
 	 */
 	public void onBlockChanged(ClientLevel level, BlockPos pos, BlockState newState) {
-		VoxelWorld w = world;
-		if (w == null) {
+		if (store == null) {
 			return;
 		}
 		ResourceKey<Level> dim = worldDimension;
@@ -172,24 +194,36 @@ public final class VoxelEngine {
 			return;
 		}
 		tickCounter++;
-		VoxelWorld w = world;
-		if (w == null) {
-			// No world means nothing enqueued is worth keeping (chunk loads
-			// always create the world first); just drop strays.
+		VoxelStore s = store;
+		if (s == null) {
+			// No store means nothing enqueued is worth keeping (chunk loads
+			// always create the store first); just drop strays.
 			loadQueue.clear();
 			unloadQueue.clear();
 			return;
 		}
 		VoxelMipper m = mipper;
-		drainSnapshots(w);
+		drainSnapshots(s);
 		if (m != null) {
-			drainBlockUpdates(w, m);
-			kickRemips(w, m);
+			drainBlockUpdates(s, m);
+			kickRemips(m);
 		}
-		if (tickCounter % EVICTION_SWEEP_TICKS == 0 && mc.player != null) {
-			BlockPos cam = mc.player.blockPosition();
-			scheduleEviction(w, cam.getX(), cam.getZ());
+		// Persistence + eviction: full save+evict on the sweep cadence, a lighter
+		// save-only pass on the configured save interval, and an early save when
+		// unsaved HOT sections pile up (bounds crash-loss while exploring fast).
+		if (mc.player != null) {
+			boolean fullEvict = tickCounter % EVICTION_SWEEP_TICKS == 0;
+			boolean saveOnly = tickCounter % saveIntervalTicks() == 0
+				|| s.hotDirtyCount() >= VoxelConstants.UNSAVED_FLUSH_THRESHOLD;
+			if (fullEvict || saveOnly) {
+				BlockPos cam = mc.player.blockPosition();
+				scheduleCycle(s, cam.getX(), cam.getZ(), fullEvict);
+			}
 		}
+	}
+
+	private static int saveIntervalTicks() {
+		return Math.max(20, HorizonConfig.get().getSaveIntervalSeconds() * 20);
 	}
 
 	/**
@@ -199,10 +233,10 @@ public final class VoxelEngine {
 	 * of entries is not client-tick work.
 	 */
 	public void onLevelUnload() {
-		VoxelWorld w;
+		VoxelStore s;
 		synchronized (this) {
-			w = world;
-			world = null;
+			s = store;
+			store = null;
 			mipper = null;
 			worldDimension = null;
 		}
@@ -212,11 +246,20 @@ public final class VoxelEngine {
 		blockUpdateQueueSize.set(0);
 		blockUpdateDropLogged = false;
 		remipArmedUntilTick = 0;
-		// New level, new registries: stale BlockState keys must not pin the
-		// old world's objects (VoxelPalettes.clear's documented contract).
-		palettes.clear();
-		if (w != null) {
-			worker.submit(w::clearAll);
+		// flushAll saves the palette (first) and every dirty section, then drops
+		// both tiers. The shared palette is NOT cleared here: it is world-scoped
+		// and kept across dimension switches; it is cleared and reloaded only
+		// when the world id actually changes (ensureWorld). flushAll saves to the
+		// store's own captured palette path, so a later worldId-change clear
+		// cannot corrupt this world's file.
+		if (s != null) {
+			worker.submit(() -> {
+				try {
+					s.flushAll();
+				} catch (Throwable t) {
+					Iris.logger.error("Horizon: voxel unload flush failed", t);
+				}
+			});
 		}
 	}
 
@@ -240,17 +283,19 @@ public final class VoxelEngine {
 	 * are fine.
 	 */
 	public void addDebugText(List<String> lines) {
-		VoxelWorld w = world;
-		if (w == null) {
+		VoxelStore s = store;
+		if (s == null) {
 			return;
 		}
-		StringBuilder line = new StringBuilder(96).append("Horizon/voxel: ");
+		VoxelWorld hot = s.hot();
+		StringBuilder line = new StringBuilder(128).append("Horizon/voxel: ");
 		for (int level = 0; level < VoxelConstants.LEVEL_COUNT; level++) {
-			line.append('L').append(level).append(' ').append(w.sectionCount(level)).append(' ');
+			line.append('L').append(level).append(' ').append(hot.sectionCount(level)).append(' ');
 		}
 		int queued = loadQueue.size() + unloadQueue.size()
 			+ pendingSnapshots.get() + blockUpdateQueueSize.get();
-		line.append("sections, palette ").append(palettes.stateCount())
+		line.append("hot, warm ").append(s.warmSectionCount())
+			.append(" (").append(s.warmBytes() >> 20).append("MB), palette ").append(palettes.stateCount())
 			.append(" states, queue ").append(queued);
 		lines.add(line.toString());
 	}
@@ -258,35 +303,75 @@ public final class VoxelEngine {
 	// --- Internals ---
 
 	private void ensureWorld(ClientLevel level) {
-		if (world != null) {
+		if (store != null) {
 			return;
 		}
 		synchronized (this) {
-			if (world != null) {
+			if (store != null) {
 				return;
 			}
-			worldDimension = level.dimension();
-			VoxelWorld w = new VoxelWorld();
-			mipper = new VoxelMipper(w, palettes);
-			world = w;
-			Iris.logger.info("Horizon: voxel world ready for " + level.dimension().location()
-				+ " (M1, in-memory only)");
+			String worldId = resolveWorldId();
+			String dimensionId = level.dimension().location().toString();
+			Path gameDir = FMLPaths.GAMEDIR.get();
+			VoxelRegionStorage disk = new VoxelRegionStorage(gameDir, worldId, dimensionId);
+			Path paletteFile = VoxelRegionStorage.paletteFile(gameDir, worldId);
+
+			// Palette is world-scoped (shared across dimensions). Clear+reload
+			// only when the world id changes — a dimension switch within one
+			// world keeps the live palette (and its unsaved ids).
+			if (!worldId.equals(currentWorldId)) {
+				palettes.clear();
+				try {
+					RegistryAccess registries = level.registryAccess();
+					HolderGetter<Block> blocks = registries.lookupOrThrow(Registries.BLOCK);
+					Registry<Biome> biomes = registries.registryOrThrow(Registries.BIOME);
+					palettes.load(paletteFile, blocks, biomes);
+				} catch (Throwable t) {
+					// A palette that fails to load leaves ids starting fresh; old
+					// section files citing higher ids resolve to stone on read
+					// (codec tombstone) rather than crashing.
+					Iris.logger.error("Horizon: voxel palette load failed for " + worldId, t);
+				}
+				currentWorldId = worldId;
+			}
+
+			VoxelWorld hot = new VoxelWorld();
+			VoxelStore s = new VoxelStore(hot, palettes, disk, paletteFile);
+			mipper = new VoxelMipper(s, palettes);
+			store = s;
+			Iris.logger.info("Horizon: voxel store ready for " + worldId + " / " + dimensionId);
 		}
 	}
 
-	private void drainSnapshots(VoxelWorld w) {
+	/** Same world-id scheme as the classic engine so both keep disjoint per-world caches. */
+	private static String resolveWorldId() {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.getSingleplayerServer() != null) {
+			return "local_" + mc.getSingleplayerServer().getWorldData().getLevelName();
+		}
+		if (mc.getCurrentServer() != null) {
+			return "server_" + mc.getCurrentServer().ip;
+		}
+		if (mc.getConnection() != null && mc.getConnection().getConnection() != null
+			&& mc.getConnection().getConnection().getRemoteAddress() != null) {
+			return "remote_" + mc.getConnection().getConnection().getRemoteAddress();
+		}
+		return "unknown";
+	}
+
+	private void drainSnapshots(VoxelStore s) {
 		int budget = MAX_SNAPSHOTS_PER_TICK;
-		budget -= drainCaptures(w, unloadQueue, budget);
+		budget -= drainCaptures(s, unloadQueue, budget);
 		// Unloads always got their shot above; loads additionally respect
 		// the in-flight ceiling — the queue itself is the retry set, the
 		// chunk stays loaded until we get to it.
 		if (budget > 0 && pendingSnapshots.get() < MAX_PENDING_SNAPSHOTS) {
-			drainCaptures(w, loadQueue, budget);
+			drainCaptures(s, loadQueue, budget);
 		}
 	}
 
 	/** Drains up to {@code budget} chunks from one queue; returns how many were captured. */
-	private int drainCaptures(VoxelWorld w, ConcurrentLinkedQueue<LevelChunk> queue, int budget) {
+	private int drainCaptures(VoxelStore s, ConcurrentLinkedQueue<LevelChunk> queue, int budget) {
 		int taken = 0;
 		while (taken < budget) {
 			LevelChunk chunk = queue.poll();
@@ -300,7 +385,7 @@ public final class VoxelEngine {
 				continue;
 			}
 			taken++;
-			captureChunk(w, chunk);
+			captureChunk(s, chunk);
 		}
 		return taken;
 	}
@@ -311,7 +396,7 @@ public final class VoxelEngine {
 	 * convert/pyramid/merge (VoxelIngest). Only the copy runs here —
 	 * PalettedContainer is not safely readable off-thread.
 	 */
-	private void captureChunk(VoxelWorld w, LevelChunk chunk) {
+	private void captureChunk(VoxelStore s, LevelChunk chunk) {
 		try {
 			var snapshot = ChunkSnapshotter.snapshot(chunk);
 			if (snapshot == null) {
@@ -322,7 +407,7 @@ public final class VoxelEngine {
 			try {
 				worker.submit(() -> {
 					try {
-						VoxelIngest.ingest(snapshot, w, palettes);
+						VoxelIngest.ingest(snapshot, s, palettes);
 					} catch (Throwable t) {
 						// An ingest failure (exotic modded state mid-convert)
 						// must never kill the worker or the queue.
@@ -341,7 +426,7 @@ public final class VoxelEngine {
 		}
 	}
 
-	private void drainBlockUpdates(VoxelWorld w, VoxelMipper m) {
+	private void drainBlockUpdates(VoxelStore s, VoxelMipper m) {
 		if (blockUpdateQueueSize.get() == 0) {
 			return;
 		}
@@ -360,8 +445,8 @@ public final class VoxelEngine {
 		worker.submit(() -> {
 			try {
 				for (BlockUpdate update : batch) {
-					VoxelIngest.applyBlockUpdate(w, palettes, m,
-						net.minecraft.core.BlockPos.of(update.packedPos()), update.state());
+					VoxelIngest.applyBlockUpdate(s, palettes, m,
+						BlockPos.of(update.packedPos()), update.state());
 				}
 			} catch (Throwable t) {
 				Iris.logger.error("Horizon: voxel block-update batch failed", t);
@@ -376,7 +461,7 @@ public final class VoxelEngine {
 	 * up the mip chain without ever monopolizing a worker. Bulk ingest never
 	 * arms this — it writes all five levels directly.
 	 */
-	private void kickRemips(VoxelWorld w, VoxelMipper m) {
+	private void kickRemips(VoxelMipper m) {
 		if (tickCounter > remipArmedUntilTick || tickCounter % MIP_DEBOUNCE_TICKS != 0) {
 			return;
 		}
@@ -389,54 +474,26 @@ public final class VoxelEngine {
 		});
 	}
 
-	private void scheduleEviction(VoxelWorld w, int camBlockX, int camBlockZ) {
-		int[] keepRadii = keepRadiiSections();
-		int maxSections = maxResidentSections();
+	/**
+	 * Submits one save/evict cycle to the worker pool, but only if none is
+	 * already running — the store's per-region monitors handle ingest overlap,
+	 * but two full cycles at once would double the work for nothing. {@code
+	 * fullEvict} runs the whole HOT→WARM pack + WARM eviction; otherwise it is a
+	 * lighter save-only pass. The cycle operates on the captured {@code s}, so a
+	 * level unload that nulls the field mid-cycle is harmless.
+	 */
+	private void scheduleCycle(VoxelStore s, int camBlockX, int camBlockZ, boolean fullEvict) {
+		if (!cycleInFlight.compareAndSet(false, true)) {
+			return;
+		}
 		worker.submit(() -> {
 			try {
-				int evicted = w.evictOutside(camBlockX, camBlockZ, keepRadii, maxSections);
-				if (evicted > 0) {
-					Iris.logger.debug("Horizon: voxel eviction dropped " + evicted + " sections");
-				}
+				s.runSaveAndEvictCycle(camBlockX, camBlockZ, fullEvict);
 			} catch (Throwable t) {
-				Iris.logger.error("Horizon: voxel eviction sweep failed", t);
+				Iris.logger.error("Horizon: voxel save/evict cycle failed", t);
+			} finally {
+				cycleInFlight.set(false);
 			}
 		});
-	}
-
-	/**
-	 * Per-level keep radii, in sections at each level, derived from the
-	 * mesh-level ring table (design section 5.1): a level is kept out to 1.5x
-	 * its ring's outer edge (the M2 warm-tier phase-1 margin), plus a
-	 * two-section cushion so the collar and the ring-boundary hysteresis
-	 * band never sit right on the eviction edge. Recomputed per sweep so
-	 * config changes apply live.
-	 */
-	private static int[] keepRadiiSections() {
-		int ringWidth = HorizonConfig.get().getLodRingWidth();
-		int maxDistance = HorizonConfig.get().getLodDistanceBlocks();
-		int[] radii = new int[VoxelConstants.LEVEL_COUNT];
-		for (int level = 0; level < radii.length; level++) {
-			int outerBlocks = level == VoxelConstants.MAX_LEVEL
-				? maxDistance
-				: Math.min(maxDistance, ringWidth << level);
-			int spanBlocks = SectionKey.sectionSpanBlocks(level);
-			radii[level] = (outerBlocks * 3 / 2 + spanBlocks - 1) / spanBlocks + 2;
-		}
-		return radii;
-	}
-
-	/**
-	 * Hard resident-section ceiling from {@code voxelMemoryBudgetMb}. M1 has no
-	 * warm-packing tier yet, so residency is raw 256 KB sections and the keep
-	 * radii alone (sized for the M2 warm formula) do not bound RAM — this cap
-	 * does. At the 256 MB default that is 1024 sections; the eviction sweep
-	 * drops the coldest sections past this count by global LRU. When M2 lands
-	 * the warm tier its own byte budget supersedes this raw-section count.
-	 */
-	private static int maxResidentSections() {
-		long budgetBytes = (long) HorizonConfig.get().getVoxelMemoryBudgetMb() * 1024L * 1024L;
-		long sectionBytes = (long) VoxelConstants.SECTION_CELLS * Long.BYTES;
-		return (int) Math.max(1, budgetBytes / sectionBytes);
 	}
 }

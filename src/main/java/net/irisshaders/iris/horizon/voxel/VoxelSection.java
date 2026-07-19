@@ -222,6 +222,20 @@ public final class VoxelSection {
 		System.arraycopy(populationMask, 0, dst, 0, populationMask.length);
 	}
 
+	/**
+	 * Restores the persisted population mask onto a section freshly inflated
+	 * from WARM/disk (M2 fault path), before it is published to residency. WHY
+	 * unsynchronized is safe here: the adoption ctor just built this instance
+	 * and the caller holds the only reference — no other thread can observe it
+	 * until {@code VoxelWorld.installResident} publishes it, which supplies the
+	 * happens-before edge. {@code src.length} always equals this mask's length
+	 * (both derive from {@link #populationMaskLongs} at the same level); the
+	 * bounded copy is belt-and-suspenders against a mismatched stored row.
+	 */
+	void restorePopulationMask(long[] src) {
+		System.arraycopy(src, 0, populationMask, 0, Math.min(src.length, populationMask.length));
+	}
+
 	public int populationMaskLength() {
 		return populationMask.length;
 	}

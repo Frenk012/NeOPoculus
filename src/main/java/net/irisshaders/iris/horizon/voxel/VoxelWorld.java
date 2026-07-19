@@ -78,6 +78,48 @@ public final class VoxelWorld {
 		dirtySections.add(key);
 	}
 
+	/** Keys with unsaved changes right now; drives the store's early-flush trigger. Weakly consistent. */
+	public int dirtyCount() {
+		return dirtySections.size();
+	}
+
+	/**
+	 * Installs a section inflated from WARM/disk into residency (M2 fault path),
+	 * or returns the section a racing writer installed first. WHY putIfAbsent
+	 * rather than a plain put: two ingest workers touching a shared parent key,
+	 * or a fault racing a fresh create, must converge on one instance — the
+	 * loser recycles its redundant inflated array and adopts the winner, so a
+	 * disk-loaded section can never be silently replaced by an all-air create
+	 * (that ordering is additionally serialized by {@code VoxelStore}'s
+	 * per-storage-region monitor; this method is the last line of defence).
+	 */
+	VoxelSection installResident(VoxelSection section) {
+		VoxelSection prev = sections.putIfAbsent(section.key, section);
+		if (prev != null) {
+			return prev;
+		}
+		sectionsPerLevel[SectionKey.level(section.key)].increment();
+		return section;
+	}
+
+	/**
+	 * Removes a section from residency for HOT&rarr;WARM packing (or the
+	 * all-air drop) WITHOUT recycling its array, so the {@code VoxelStore} can
+	 * encode the cells first and recycle only afterwards — the encode-then-recycle
+	 * discipline that keeps a pooled array from being handed out while a worker
+	 * might still read it. The two-arg remove makes this a no-op if a racing
+	 * writer already swapped the key. Returns whether this exact instance left
+	 * residency; the caller recycles iff true.
+	 */
+	boolean removeResident(long key, VoxelSection expected) {
+		if (sections.remove(key, expected)) {
+			sectionsPerLevel[SectionKey.level(key)].decrement();
+			dirtySections.remove(key);
+			return true;
+		}
+		return false;
+	}
+
 	/**
 	 * Takes the current dirty set, leaving concurrently-added keys behind
 	 * for the next drain — same contract as {@code LodWorld.drainDirtyRegions}.
@@ -97,6 +139,16 @@ public final class VoxelWorld {
 	/** Total resident sections across all levels. */
 	public int totalSections() {
 		return sections.size();
+	}
+
+	/**
+	 * Snapshot of the resident sections for the store's HOT&rarr;WARM pack pass
+	 * (design section 5.2 global LRU). A copy so the store can sort by
+	 * {@code lastTouchedNanos} and mutate residency (pack/recycle) without
+	 * fighting the live map's weakly-consistent iterator.
+	 */
+	java.util.List<VoxelSection> residentSections() {
+		return new ArrayList<>(sections.values());
 	}
 
 	/**
@@ -128,6 +180,14 @@ public final class VoxelWorld {
 	 * the tens of GB. When the radius pass leaves more than the cap resident,
 	 * the least-recently-touched sections are dropped until under it — a
 	 * global LRU, level-agnostic, matching the design's HOT-tier policy.
+	 *
+	 * <p><b>Superseded in M2 and no longer called.</b> {@link VoxelStore} now
+	 * owns residency management: it packs cold HOT sections down to the WARM
+	 * tier (saving dirty ones first) instead of dropping them, so terrain is
+	 * never lost to eviction. This method's recycle-without-save behaviour would
+	 * discard unsaved edits, so it is retained only as documented reference for
+	 * the HOT global-LRU policy the store re-implements safely; do not wire it
+	 * back into the save cycle.
 	 */
 	public int evictOutside(int camBlockX, int camBlockZ, int[] keepRadiusSectionsByLevel, int maxResidentSections) {
 		int evicted = 0;

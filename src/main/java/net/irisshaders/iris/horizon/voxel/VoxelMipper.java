@@ -32,7 +32,16 @@ final class VoxelMipper {
 	/** State + biome bits: cell identity for ranking, light excluded (averaged separately). */
 	private static final long IDENTITY_MASK = VoxelConstants.STATE_MASK | VoxelConstants.BIOME_MASK;
 
-	private final VoxelWorld world;
+	/**
+	 * M2: the mipper faults through the store so an incremental remip can write
+	 * a parent cell into a section that was packed down to WARM (or evicted to
+	 * disk) since it was last meshed — otherwise a block edit's mip would be
+	 * silently dropped for any non-HOT parent. Child reads stay HOT-only:
+	 * remips are only ever enqueued for HOT children (bulk ingest writes all
+	 * levels directly and never enqueues), so a child that left HOT is stale by
+	 * definition and correctly skipped.
+	 */
+	private final VoxelStore store;
 	private final VoxelPalettes palettes;
 
 	/**
@@ -49,8 +58,8 @@ final class VoxelMipper {
 		boolean drained;
 	}
 
-	VoxelMipper(VoxelWorld world, VoxelPalettes palettes) {
-		this.world = world;
+	VoxelMipper(VoxelStore store, VoxelPalettes palettes) {
+		this.store = store;
 		this.palettes = palettes;
 	}
 
@@ -134,12 +143,12 @@ final class VoxelMipper {
 	 * a torch toggle from remipping four levels of stone.
 	 */
 	private void remipSection(long childKey, int[] cellIdxs, long[] children, LongOpenHashSet touched) {
-		VoxelSection child = world.get(childKey);
+		VoxelSection child = store.hot().get(childKey);
 		if (child == null) {
 			return;
 		}
 		long parentKey = SectionKey.parentOf(childKey);
-		VoxelSection parent = world.acquireForWrite(parentKey);
+		VoxelSection parent = store.acquireForWrite(parentKey);
 		// Parent-local base of this child's octant: child section coord
 		// parity selects which 16-cell half of the parent it maps into.
 		int ox = (SectionKey.x(childKey) & 1) << 4;
@@ -182,6 +191,11 @@ final class VoxelMipper {
 		}
 		if (changed) {
 			touched.add(parentKey);
+			// The parent cell(s) changed but writeCell only flips the per-section
+			// dirty flag; enrol the key in the world dirty set too so the M2 save
+			// cycle actually persists this remip (bulk ingest enrols its own
+			// writes the same way).
+			store.markDirty(parentKey);
 		}
 	}
 

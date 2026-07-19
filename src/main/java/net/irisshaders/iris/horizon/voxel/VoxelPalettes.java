@@ -6,6 +6,12 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderGetter;
 import net.minecraft.core.Registry;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.EmptyBlockGetter;
@@ -15,7 +21,13 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
+import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -55,6 +67,22 @@ public final class VoxelPalettes {
 
 	private static final int INITIAL_STATE_CAPACITY = 1024;
 
+	/**
+	 * palette.nbt layout version, independent of the {@code .hlod} region
+	 * {@link VoxelConstants#STORAGE_VERSION}. A file whose version does not
+	 * match is discarded (moved aside), not migrated — the locked
+	 * regenerate-don't-migrate rule (design section 2): the palette is derived
+	 * from the live registries, so a fresh one costs only re-registration, and
+	 * region rows citing now-unknown ids decode to stone until re-captured.
+	 */
+	private static final int PALETTE_FORMAT_VERSION = 1;
+	private static final String TAG_VERSION = "version";
+	private static final String TAG_STATES = "states";
+	private static final String TAG_BIOMES = "biomes";
+	private static final String TAG_ID = "id";
+	private static final String TAG_STATE = "state";
+	private static final String TAG_NAME = "name";
+
 	/** Serializes registration; never held by lookups. */
 	private final Object registerLock = new Object();
 
@@ -67,6 +95,15 @@ public final class VoxelPalettes {
 	 */
 	private final Set<BlockState> stateOverflow = ConcurrentHashMap.newKeySet();
 	private final Set<ResourceLocation> biomeOverflow = ConcurrentHashMap.newKeySet();
+	/**
+	 * Persisted state ids whose block no longer resolves this session (mod
+	 * removed): id -> the original saved NBT, kept verbatim so the id round-trips
+	 * and is re-persisted unchanged (design section 2). {@link #stateOf} already
+	 * renders these as stone via the null-slot fallback; retaining the blob means
+	 * re-adding the mod restores the exact state at the same id with zero
+	 * migration. Guarded by {@link #registerLock}; only touched at load/save/clear.
+	 */
+	private final Map<Integer, CompoundTag> tombstoneStateNbt = new HashMap<>();
 	private final AtomicInteger overflowCount = new AtomicInteger();
 	private volatile boolean overflowLogged;
 	private volatile boolean keylessBiomeLogged;
@@ -281,27 +318,302 @@ public final class VoxelPalettes {
 	}
 
 	/**
-	 * M2 seam: reads {@code palette.nbt} and replays every persisted entry
-	 * (resolving via the given lookups, tombstoning failures per design
-	 * section 2) before any region file is read. Worker thread, once at
-	 * world open. No-op in M1 — there are no files yet, ids simply start
-	 * fresh each session.
+	 * Reads {@code palette.nbt} and replays every persisted entry at its exact
+	 * saved id (resolving via the given lookups, tombstoning failures per design
+	 * section 2) before any region file is read. Worker thread, once at world
+	 * open. A missing file is the fresh-world path (ids start from the reserved
+	 * set); a corrupt or wrong-version file is quarantined and treated as absent
+	 * — region rows citing ids we then no longer know decode to stone, the
+	 * documented graceful-degradation path, never a crash.
+	 *
+	 * <p>Must complete before any {@link #idFor} runs for this world: it rebuilds
+	 * the id space wholesale under {@link #registerLock}, and a registration
+	 * racing the replay could claim an id the file wants for a different state.
+	 * The engine guarantees this ordering (load, then start ingestion); the lock
+	 * only protects against an accidental concurrent lookup, not against a caller
+	 * that ingests before load returns.
 	 */
 	public void load(Path file, HolderGetter<Block> blocks, Registry<Biome> biomes) {
-		// Implemented in M2 alongside VoxelRegionStorage.
+		if (file == null) {
+			return;
+		}
+		if (!Files.exists(file)) {
+			// Fresh world, or first run since the voxel engine was enabled:
+			// nothing to replay, ids start from the bootstrap reserved set.
+			return;
+		}
+
+		CompoundTag root;
+		try {
+			root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+		} catch (IOException | RuntimeException e) {
+			// gzip CRC failure / truncation / malformed NBT. The palette is the
+			// linchpin of id stability, so a damaged one cannot be trusted at all.
+			// Quarantine so it does not re-fail every session, then start fresh.
+			Iris.logger.error("Horizon: corrupt voxel palette " + file
+				+ "; quarantining and starting fresh", e);
+			quarantine(file, ".corrupt");
+			return;
+		}
+
+		int fileVersion = root.getInt(TAG_VERSION);
+		if (fileVersion != PALETTE_FORMAT_VERSION) {
+			Iris.logger.warn("Horizon: voxel palette version " + fileVersion + " != "
+				+ PALETTE_FORMAT_VERSION + "; discarding " + file + " (caches will regenerate)");
+			quarantine(file, ".old");
+			return;
+		}
+
+		synchronized (registerLock) {
+			// Wholesale reset so a re-open (dimension/level switch without an
+			// intervening clear) can never stack two worlds' entries, then replay
+			// the file verbatim on top of the reserved set.
+			resetToBootstrapLocked();
+
+			int stateTombstones = replayStates(root.getList(TAG_STATES, Tag.TAG_COMPOUND), blocks);
+			int biomeTombstones = replayBiomes(root.getList(TAG_BIOMES, Tag.TAG_COMPOUND), biomes);
+
+			// Memory now mirrors disk: nothing to flush until the next
+			// registration (which will re-arm the dirty flag itself).
+			dirty = false;
+			version.incrementAndGet();
+
+			Iris.logger.info("Horizon: loaded voxel palette " + file + " — "
+				+ nextStateId.get() + " states (" + stateTombstones + " tombstoned), "
+				+ nextBiomeId.get() + " biomes (" + biomeTombstones + " tombstoned)");
+		}
 	}
 
 	/**
-	 * M2 seam: persists both palettes (atomic tmp+move) if anything was
-	 * registered since the last save. Must run before any region flush —
-	 * the palette-first invariant is what makes every id on disk defined
-	 * after a crash. Returns whether a write happened. Always false in M1
-	 * (nothing to persist; the dirty flag is still maintained so M2's save
-	 * cycle works unchanged).
+	 * Replays persisted block states into the reverse array and forward map at
+	 * their exact saved ids. An entry whose block no longer resolves (removed
+	 * mod: {@link NbtUtils#readBlockState} yields air, and air is never persisted)
+	 * becomes a tombstone — its slot is reserved so later ids keep their value,
+	 * and its original NBT is retained for verbatim re-persist. Caller holds
+	 * {@link #registerLock}. Returns the tombstone count.
+	 */
+	private int replayStates(ListTag states, HolderGetter<Block> blocks) {
+		int maxValidId = FALLBACK_STATE_ID;
+		for (int i = 0; i < states.size(); i++) {
+			int id = states.getCompound(i).getInt(TAG_ID);
+			if (id > maxValidId && id < VoxelConstants.MAX_STATE_IDS) {
+				maxValidId = id;
+			}
+		}
+		ensureStateCapacity(maxValidId);
+
+		int tombstones = 0;
+		for (int i = 0; i < states.size(); i++) {
+			CompoundTag entry = states.getCompound(i);
+			int id = entry.getInt(TAG_ID);
+			// id 0 is implicit air (never persisted); protect the air/stone
+			// reserved slots and drop anything past the cap or corrupt.
+			if (id <= FALLBACK_STATE_ID || id >= VoxelConstants.MAX_STATE_IDS) {
+				continue;
+			}
+			CompoundTag stateNbt = entry.getCompound(TAG_STATE);
+			BlockState state = safeReadBlockState(blocks, stateNbt);
+			if (state == null || state.isAir()) {
+				tombstoneStateNbt.put(id, stateNbt.copy());
+				tombstones++;
+				// statesById[id] stays null → stateOf(id) falls back to stone.
+				// Deliberately not added to stateToId: there is no live state key.
+			} else {
+				statesById[id] = state;
+				boolean leaf = safeIsLeafLike(state);
+				leafById[id] = leaf;
+				opacityById[id] = computeOpacity(state, leaf);
+				stateToId.put(state, id);
+			}
+		}
+		// Reserve every persisted slot so new registrations never collide with a
+		// tombstone's id (append-only across sessions).
+		nextStateId.set(maxValidId + 1);
+		return tombstones;
+	}
+
+	/**
+	 * Replays persisted biome names at their saved ids. Biomes need no NBT
+	 * retention: the {@link ResourceLocation} name is the whole persistent form,
+	 * so it always round-trips and re-adding a datapack restores correct tinting
+	 * automatically. A name that does not resolve in the current registry is
+	 * counted as a tombstone (it still tints as plains via {@link #biomeOf}'s
+	 * consumers) but its slot and name are kept. Caller holds {@link #registerLock}.
+	 * Returns the tombstone count.
+	 */
+	private int replayBiomes(ListTag biomeList, Registry<Biome> biomes) {
+		int maxValidId = FALLBACK_BIOME_ID;
+		int tombstones = 0;
+		for (int i = 0; i < biomeList.size(); i++) {
+			CompoundTag entry = biomeList.getCompound(i);
+			int id = entry.getInt(TAG_ID);
+			// Protect the reserved plains slot (id 0) and drop out-of-range ids.
+			if (id <= FALLBACK_BIOME_ID || id >= VoxelConstants.MAX_BIOME_IDS) {
+				continue;
+			}
+			ResourceLocation name = ResourceLocation.tryParse(entry.getString(TAG_NAME));
+			if (name == null) {
+				continue; // unparseable name; slot left empty, resolves to plains
+			}
+			biomesById[id] = name;
+			biomeToId.put(name, id);
+			if (!biomes.containsKey(name)) {
+				tombstones++;
+			}
+			if (id > maxValidId) {
+				maxValidId = id;
+			}
+		}
+		nextBiomeId.set(maxValidId + 1);
+		return tombstones;
+	}
+
+	/**
+	 * Persists both palettes (atomic tmp+move) if anything was registered since
+	 * the last save; no-op and returns false otherwise. Worker/IO thread.
+	 *
+	 * <p><b>Palette-first save invariant (design section 2).</b> The save cycle
+	 * MUST call this as its very first step, before it encodes or writes any
+	 * section row. The guarantee it buys: every id that was registered at the
+	 * instant this call snapshots the tables is durable on disk once the call
+	 * returns true. Because ids are append-only and monotonic, and a cell can
+	 * only cite an id that was registered before the cell was written, a row
+	 * written later in the same cycle references either (a) an id already in this
+	 * snapshot — on disk — or (b) an id registered during this flush, whose
+	 * section therefore also became dirty during the flush and will be written in
+	 * a later cycle that runs its own palette save first. The only residual
+	 * window (an id registered mid-flush that also lands in a row written this
+	 * same cycle) is closed on the read side: the codec remaps any cell whose
+	 * {@code stateId >= paletteSize} to stone (design section 6), so a crash in
+	 * that window costs one stone-coloured cell until re-capture, never a
+	 * dangling reference or a load failure.
+	 *
+	 * <p>Concurrency: the tables are snapshotted (and the dirty flag cleared)
+	 * under the same {@link #registerLock} that {@link #idFor} registers under,
+	 * so a registration is either fully in the snapshot or fully after it. The
+	 * gzip write itself runs outside the lock over a fully detached
+	 * {@link CompoundTag}, so concurrent lookups never block on disk I/O. A
+	 * registration that races in after the snapshot re-arms the dirty flag
+	 * itself; a failed write re-arms it too, so no registration is ever lost.
 	 */
 	public boolean saveIfDirty(Path file) {
-		// Implemented in M2 alongside VoxelRegionStorage.
-		return false;
+		if (file == null) {
+			return false;
+		}
+
+		CompoundTag root;
+		synchronized (registerLock) {
+			if (!dirty) {
+				return false;
+			}
+			root = snapshotToTagLocked();
+			// Clear under the lock at the snapshot instant: any later registration
+			// re-sets dirty itself, so clearing here can never drop an id. If the
+			// write below fails we re-arm dirty and retry next cycle.
+			dirty = false;
+		}
+
+		Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+		try {
+			Path parent = file.getParent();
+			if (parent != null) {
+				Files.createDirectories(parent);
+			}
+			NbtIo.writeCompressed(root, tmp);
+			moveAtomic(tmp, file);
+			return true;
+		} catch (IOException | RuntimeException e) {
+			Iris.logger.error("Horizon: failed to save voxel palette " + file
+				+ "; re-arming dirty for retry next cycle", e);
+			dirty = true; // never lose the registrations captured in the snapshot
+			try {
+				Files.deleteIfExists(tmp);
+			} catch (IOException ignored) {
+				// best-effort cleanup; a stale .tmp is overwritten next attempt
+			}
+			return false;
+		}
+	}
+
+	/**
+	 * Builds a fully detached {@link CompoundTag} of the current palettes so the
+	 * gzip write can run outside {@link #registerLock}. Caller holds the lock.
+	 * States are written from id 1 (skipping implicit air at 0); a tombstoned
+	 * slot re-emits its retained NBT verbatim so removed-mod ids survive the
+	 * round-trip. Biomes are written from id 1 (skipping reserved plains at 0).
+	 */
+	private CompoundTag snapshotToTagLocked() {
+		CompoundTag root = new CompoundTag();
+		root.putInt(TAG_VERSION, PALETTE_FORMAT_VERSION);
+
+		ListTag stateList = new ListTag();
+		BlockState[] states = statesById;
+		int stateEnd = nextStateId.get();
+		for (int id = FALLBACK_STATE_ID; id < stateEnd; id++) {
+			CompoundTag stateNbt;
+			BlockState state = id < states.length ? states[id] : null;
+			if (state != null) {
+				stateNbt = NbtUtils.writeBlockState(state);
+			} else {
+				CompoundTag tomb = tombstoneStateNbt.get(id);
+				if (tomb == null) {
+					// Empty slot with no retained blob: unreachable for a
+					// well-formed palette, but skip rather than emit garbage.
+					continue;
+				}
+				stateNbt = tomb.copy();
+			}
+			CompoundTag entry = new CompoundTag();
+			entry.putInt(TAG_ID, id);
+			entry.put(TAG_STATE, stateNbt);
+			stateList.add(entry);
+		}
+		root.put(TAG_STATES, stateList);
+
+		ListTag biomeList = new ListTag();
+		ResourceLocation[] biomes = biomesById;
+		int biomeEnd = nextBiomeId.get();
+		for (int id = FALLBACK_BIOME_ID + 1; id < biomeEnd; id++) {
+			ResourceLocation name = id < biomes.length ? biomes[id] : null;
+			if (name == null) {
+				continue;
+			}
+			CompoundTag entry = new CompoundTag();
+			entry.putInt(TAG_ID, id);
+			entry.putString(TAG_NAME, name.toString());
+			biomeList.add(entry);
+		}
+		root.put(TAG_BIOMES, biomeList);
+		return root;
+	}
+
+	/** Atomic replace where the filesystem supports it, plain replace otherwise. */
+	private static void moveAtomic(Path tmp, Path dest) throws IOException {
+		try {
+			Files.move(tmp, dest, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+		} catch (AtomicMoveNotSupportedException e) {
+			Files.move(tmp, dest, StandardCopyOption.REPLACE_EXISTING);
+		}
+	}
+
+	/** Renames a bad palette file aside so it does not re-fail every session. */
+	private static void quarantine(Path file, String suffix) {
+		try {
+			Path dest = file.resolveSibling(file.getFileName() + suffix);
+			Files.deleteIfExists(dest);
+			Files.move(file, dest, StandardCopyOption.REPLACE_EXISTING);
+		} catch (IOException | RuntimeException e) {
+			Iris.logger.warn("Horizon: could not quarantine voxel palette " + file, e);
+		}
+	}
+
+	/** {@link NbtUtils#readBlockState} guarded: corrupt property NBT tombstones rather than aborts world load. */
+	private static BlockState safeReadBlockState(HolderGetter<Block> blocks, CompoundTag tag) {
+		try {
+			return NbtUtils.readBlockState(blocks, tag);
+		} catch (Throwable t) {
+			return null;
+		}
 	}
 
 	/**
@@ -312,20 +624,54 @@ public final class VoxelPalettes {
 	 */
 	public void clear() {
 		synchronized (registerLock) {
-			stateToId.clear();
-			biomeToId.clear();
-			stateOverflow.clear();
-			biomeOverflow.clear();
-			overflowCount.set(0);
-			overflowLogged = false;
-			keylessBiomeLogged = false;
-			bootstrap();
+			resetToBootstrapLocked();
 			version.incrementAndGet();
 		}
 	}
 
+	/**
+	 * Drops every registration back to the reserved set. Shared by {@link #clear}
+	 * (level unload) and {@link #load} (which replays a file on top of a clean
+	 * slate). Caller holds {@link #registerLock}; the version bump is the
+	 * caller's so load can order it after the replay.
+	 */
+	private void resetToBootstrapLocked() {
+		stateToId.clear();
+		biomeToId.clear();
+		stateOverflow.clear();
+		biomeOverflow.clear();
+		tombstoneStateNbt.clear();
+		overflowCount.set(0);
+		overflowLogged = false;
+		keylessBiomeLogged = false;
+		bootstrap();
+	}
+
 	private void growStateArrays() {
-		int newLength = (int) Math.min((long) statesById.length * 2, VoxelConstants.MAX_STATE_IDS);
+		growStateArraysTo((int) Math.min((long) statesById.length * 2, VoxelConstants.MAX_STATE_IDS));
+	}
+
+	/**
+	 * Ensures the reverse arrays can index {@code maxId} directly, doubling until
+	 * they fit (capped at {@link VoxelConstants#MAX_STATE_IDS}). Used by the M2
+	 * loader, which places states at their exact persisted ids rather than
+	 * appending one at a time.
+	 */
+	private void ensureStateCapacity(int maxId) {
+		if (maxId < statesById.length) {
+			return;
+		}
+		long newLength = statesById.length;
+		while (newLength <= maxId && newLength < VoxelConstants.MAX_STATE_IDS) {
+			newLength <<= 1;
+		}
+		growStateArraysTo((int) Math.min(newLength, VoxelConstants.MAX_STATE_IDS));
+	}
+
+	private void growStateArraysTo(int newLength) {
+		if (newLength <= statesById.length) {
+			return;
+		}
 		BlockState[] states = new BlockState[newLength];
 		byte[] opacity = new byte[newLength];
 		boolean[] leaf = new boolean[newLength];

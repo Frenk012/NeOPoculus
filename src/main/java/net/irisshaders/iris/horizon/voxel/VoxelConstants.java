@@ -92,4 +92,19 @@ public final class VoxelConstants {
 
 	// --- Storage format ---
 	public static final int STORAGE_VERSION = 4;
+
+	// --- Two-tier residency (VoxelStore, design-data-storage.md section 5.2) ---
+	/**
+	 * HOT-tier cap: raw {@code long[]} sections kept resident before the save
+	 * cycle packs the coldest ones down to WARM. 256 sections x 256 KB = 64 MB,
+	 * matching the design section 5.3 RAM budget. A soft cap: a burst of ingest
+	 * may exceed it briefly until the next {@code VoxelStore.runSaveAndEvictCycle}.
+	 */
+	public static final int HOT_CACHE_SECTIONS = 256;
+	/**
+	 * Dirty-HOT-section backlog that triggers an early save-only cycle between
+	 * the periodic ones (design section 6). Bounds how much unsaved work can
+	 * accumulate — and thus be lost on a hard crash — while exploring fast.
+	 */
+	public static final int UNSAVED_FLUSH_THRESHOLD = 512;
 }

@@ -125,22 +125,25 @@ final class ChunkSnapshotter {
 	}
 
 	/**
-	 * Copies the 64 biome quarts out of a section's read-only container via
-	 * its bulk iterator ({@code getAll} visits every entry in index order).
-	 * The cursor is bounds-checked defensively: a modded container with an
-	 * unexpected entry count must degrade (extra entries ignored, missing
-	 * ones null and later treated as plains), never throw mid-snapshot.
+	 * Copies the 64 biome quarts out of a section's read-only container by
+	 * reading every quart cell. WHY not {@code PalettedContainerRO.getAll}: like
+	 * {@code PalettedContainer.getAll} for states, it enumerates the palette's
+	 * unique values (once per distinct biome), NOT the 64 cells — so a
+	 * single-biome section filled only {@code copy[0]} and left every other
+	 * quart null (treated as plains), which is why distant LOD tinted almost
+	 * everything as plains regardless of biome. The index {@code (qy<<4)|(qz<<2)|qx}
+	 * matches both the vanilla biome container and {@code ChunkPyramid.resolveBiomes}.
 	 */
 	@SuppressWarnings("unchecked")
 	private static Holder<Biome>[] copyBiomes(PalettedContainerRO<Holder<Biome>> container) {
 		Holder<Biome>[] copy = (Holder<Biome>[]) new Holder<?>[VoxelConstants.QUARTS_PER_VANILLA_SECTION];
-		int[] cursor = new int[1];
-		container.getAll(holder -> {
-			int index = cursor[0]++;
-			if (index < copy.length) {
-				copy[index] = holder;
+		for (int qy = 0; qy < 4; qy++) {
+			for (int qz = 0; qz < 4; qz++) {
+				for (int qx = 0; qx < 4; qx++) {
+					copy[(qy << 4) | (qz << 2) | qx] = container.get(qx, qy, qz);
+				}
 			}
-		});
+		}
 		return copy;
 	}
 }

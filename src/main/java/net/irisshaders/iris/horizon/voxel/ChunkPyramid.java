@@ -131,24 +131,34 @@ final class ChunkPyramid {
 		int nonAir = 0;
 		BlockState lastState = null;
 		int lastId = 0;
+		boolean lastDeco = false;
 		for (int y = 0; y < 16; y++) {
 			for (int z = 0; z < 16; z++) {
 				int base = (y << 8) | (z << 4);
 				for (int x = 0; x < 16; x++) {
 					BlockState state = states.get(x, y, z);
 					int stateId;
+					boolean deco;
 					if (state == lastState) {
 						stateId = lastId;
+						deco = lastDeco;
 					} else {
 						stateId = palettes.idFor(state);
+						// Small plants/decorations render as ugly floating cubes
+						// in the voxel LOD and merge into the ground at distance
+						// anyway; drop them so the block beneath shows through.
+						deco = state.getBlock() instanceof net.minecraft.world.level.block.BushBlock
+							|| state.getBlock() instanceof net.minecraft.world.level.block.VineBlock;
 						lastState = state;
 						lastId = stateId;
+						lastDeco = deco;
 					}
+					int cellState = deco ? 0 : stateId;
 					int bl = block == null ? 0 : block.get(x, y, z);
 					int sl = sky == null ? skyFallback : sky.get(x, y, z);
 					int biome = biomeIds[((y >> 2) << 4) | ((z >> 2) << 2) | (x >> 2)];
-					p0[base | x] = VoxelCell.pack(stateId, biome, bl, sl);
-					if (stateId != 0) {
+					p0[base | x] = VoxelCell.pack(cellState, biome, bl, sl);
+					if (cellState != 0) {
 						nonAir++;
 					}
 				}

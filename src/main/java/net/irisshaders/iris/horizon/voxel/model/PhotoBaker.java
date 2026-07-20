@@ -46,26 +46,75 @@ public final class PhotoBaker {
 			Minecraft mc = Minecraft.getInstance();
 			BakedModel model = mc.getBlockRenderer().getBlockModel(state);
 			Direction dir = FACE_DIR[face];
-			BakedQuad quad = model == mc.getModelManager().getMissingModel() ? null : pickQuad(model, state, dir);
-			if (quad == null) {
-				// Fluids (water/lava) render with no baked model — bake their
-				// still texture from the fluid client extensions instead.
-				return bakeFluid(mc, state);
+			if (model != mc.getModelManager().getMissingModel()) {
+				int[] composited = compositeFace(mc, model, state, dir);
+				if (composited != null) {
+					return composited;
+				}
 			}
-			TextureAtlasSprite sprite = quad.getSprite();
-			NativeImage image = ((SpriteContentsAccessor) sprite.contents()).getOriginalImage();
-			int fw = sprite.contents().width();
-			int fh = sprite.contents().height();
-			int[] photo = downsample(image, fw, fh);
-			if (photo == null) {
-				return null;
-			}
-			if (quad.isTinted()) {
-				applyTint(photo, tintColor(mc, state, quad.getTintIndex()));
-			}
-			return photo;
+			// Fluids (water/lava) render with no baked model.
+			return bakeFluid(mc, state);
 		} catch (Throwable t) {
 			return null;
+		}
+	}
+
+	/**
+	 * Composites every quad facing {@code dir} (culled + general) in draw order,
+	 * tinting only the tinted quads. This gets grass_block sides right: the
+	 * untinted dirt base first, then the biome-tinted grass overlay over it,
+	 * rather than one quad forcing the whole face all-green or all-dirt.
+	 */
+	private static int[] compositeFace(Minecraft mc, BakedModel model, BlockState state, Direction dir) {
+		java.util.List<BakedQuad> quads = new java.util.ArrayList<>(model.getQuads(state, dir, RANDOM));
+		for (BakedQuad q : model.getQuads(state, null, RANDOM)) {
+			if (q.getDirection() == dir) {
+				quads.add(q);
+			}
+		}
+		if (quads.isEmpty()) {
+			return null;
+		}
+		int[] acc = new int[16 * 16]; // 0 = transparent
+		boolean any = false;
+		for (BakedQuad q : quads) {
+			TextureAtlasSprite sprite = q.getSprite();
+			NativeImage image = ((SpriteContentsAccessor) sprite.contents()).getOriginalImage();
+			int[] layer = downsample(image, sprite.contents().width(), sprite.contents().height());
+			if (layer == null) {
+				continue;
+			}
+			if (q.isTinted()) {
+				applyTint(layer, tintColor(mc, state, q.getTintIndex()));
+			}
+			over(acc, layer);
+			any = true;
+		}
+		return any ? acc : null;
+	}
+
+	/** Src-over composite of {@code src} onto {@code dst}, both {@code 0xRRGGBBAA}. */
+	private static void over(int[] dst, int[] src) {
+		for (int i = 0; i < dst.length; i++) {
+			int s = src[i];
+			int sa = s & 0xFF;
+			if (sa == 0) {
+				continue;
+			}
+			int d = dst[i];
+			int da = d & 0xFF;
+			int outA = sa + da * (255 - sa) / 255;
+			if (outA == 0) {
+				dst[i] = 0;
+				continue;
+			}
+			int sr = (s >>> 24) & 0xFF, sg = (s >>> 16) & 0xFF, sb = (s >>> 8) & 0xFF;
+			int dr = (d >>> 24) & 0xFF, dg = (d >>> 16) & 0xFF, db = (d >>> 8) & 0xFF;
+			int keep = da * (255 - sa) / 255;
+			int r = (sr * sa + dr * keep) / outA;
+			int g = (sg * sa + dg * keep) / outA;
+			int b = (sb * sa + db * keep) / outA;
+			dst[i] = (r << 24) | (g << 16) | (b << 8) | outA;
 		}
 	}
 
@@ -98,21 +147,6 @@ public final class PhotoBaker {
 		} catch (Throwable t) {
 			return null;
 		}
-	}
-
-	/** Direction-culled quad for the face, else any unculled quad, else null. */
-	private static BakedQuad pickQuad(BakedModel model, BlockState state, Direction dir) {
-		List<BakedQuad> quads = model.getQuads(state, dir, RANDOM);
-		if (!quads.isEmpty()) {
-			return quads.get(0);
-		}
-		List<BakedQuad> general = model.getQuads(state, null, RANDOM);
-		for (BakedQuad q : general) {
-			if (q.getDirection() == dir) {
-				return q;
-			}
-		}
-		return general.isEmpty() ? null : general.get(0);
 	}
 
 	/** Default (no position) tint for a tinted quad, {@code 0xRRGGBB}, or -1 if none. */

@@ -8,12 +8,15 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderGetter;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.fml.loading.FMLPaths;
 
@@ -411,33 +414,84 @@ public final class VoxelEngine {
 
 	private void drainSnapshots(VoxelStore s) {
 		int budget = MAX_SNAPSHOTS_PER_TICK;
-		budget -= drainCaptures(s, unloadQueue, budget);
+		// Unloads are last-chance: capture regardless of light readiness.
+		budget -= drainCaptures(s, unloadQueue, budget, false);
 		// Unloads always got their shot above; loads additionally respect
 		// the in-flight ceiling — the queue itself is the retry set, the
-		// chunk stays loaded until we get to it.
+		// chunk stays loaded until we get to it — and wait for light to land.
 		if (budget > 0 && pendingSnapshots.get() < MAX_PENDING_SNAPSHOTS) {
-			drainCaptures(s, loadQueue, budget);
+			drainCaptures(s, loadQueue, budget, true);
 		}
 	}
 
-	/** Drains up to {@code budget} chunks from one queue; returns how many were captured. */
-	private int drainCaptures(VoxelStore s, ConcurrentLinkedQueue<LevelChunk> queue, int budget) {
+	/**
+	 * Drains up to {@code budget} chunks from one queue; returns how many were
+	 * captured. When {@code requireLight}, a chunk whose client skylight has not
+	 * landed yet (see {@link #isLightReady}) is deferred back onto the queue
+	 * instead of captured — capturing it now would bake sky=0 and shade its
+	 * surface pitch-black. {@code examined} is bounded so a burst of not-yet-lit
+	 * chunks cannot spin the whole queue in one tick.
+	 */
+	private int drainCaptures(VoxelStore s, ConcurrentLinkedQueue<LevelChunk> queue, int budget, boolean requireLight) {
 		int taken = 0;
-		while (taken < budget) {
+		int examined = 0;
+		int maxExamine = budget * 8;
+		List<LevelChunk> deferred = null;
+		while (taken < budget && examined < maxExamine) {
 			LevelChunk chunk = queue.poll();
 			if (chunk == null) {
 				break;
 			}
+			examined++;
 			ResourceKey<Level> dim = worldDimension;
 			if (dim != null && chunk.getLevel().dimension() != dim) {
 				// Stray cross-dimension event (mods firing out of order during
 				// dimension switches) — same guard as the classic engine.
 				continue;
 			}
+			// Defer only while the chunk is still loaded; a chunk that unloaded
+			// while waiting for light gets captured now (last chance) rather than
+			// looping forever in the queue.
+			if (requireLight && !isLightReady(chunk) && chunkStillLoaded(chunk)) {
+				if (deferred == null) {
+					deferred = new ArrayList<>();
+				}
+				deferred.add(chunk);
+				continue;
+			}
 			taken++;
 			captureChunk(s, chunk);
 		}
+		if (deferred != null) {
+			queue.addAll(deferred); // retry next tick, once light has propagated
+		}
 		return taken;
+	}
+
+	/**
+	 * Whether the client has applied this chunk's skylight yet. The chunk-load
+	 * event fires before {@code ClientPacketListener} runs its queued
+	 * {@code applyLightData}, so right after load the sky {@link DataLayer} for
+	 * the surface section is still absent; capturing then bakes sky=0 (black
+	 * surfaces). Probing the highest non-air section's sky layer tells us the
+	 * light packet has been applied.
+	 */
+	private static boolean isLightReady(LevelChunk chunk) {
+		if (!chunk.getLevel().dimensionType().hasSkyLight()) {
+			return true; // Nether/End have no skylight to wait for; never stall them
+		}
+		int highest = chunk.getHighestFilledSectionIndex();
+		if (highest < 0) {
+			return true; // all-air column: nothing to shade, don't stall it
+		}
+		int sectionY = chunk.getMinSection() + highest;
+		var sky = chunk.getLevel().getLightEngine().getLayerListener(LightLayer.SKY);
+		return sky.getDataLayerData(SectionPos.of(chunk.getPos().x, sectionY, chunk.getPos().z)) != null;
+	}
+
+	/** Whether this chunk position is still resident (a deferred capture of an unloaded chunk must not linger). */
+	private static boolean chunkStillLoaded(LevelChunk chunk) {
+		return chunk.getLevel().getChunkSource().hasChunk(chunk.getPos().x, chunk.getPos().z);
 	}
 
 	/**

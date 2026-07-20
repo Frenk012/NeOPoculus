@@ -27,8 +27,15 @@ public final class VoxelRenderer {
 	private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 	private volatile int epoch;
 	private final Object epochLock = new Object();
-	/** Regions whose current mesh used a flat-color fallback (unbaked state); re-meshed when bakes land. */
-	private final Set<Long> fallbackRegions = ConcurrentHashMap.newKeySet();
+	/**
+	 * Regions whose current mesh used a flat-color fallback (unbaked state),
+	 * mapped to the bakery epoch at which they were meshed. The scheduler
+	 * re-meshes a region once the epoch advances past its recorded value, so the
+	 * self-heal is level-triggered per region rather than a single global epoch
+	 * edge — which could be consumed before a still-building region joined the
+	 * set, leaving it flat forever in a quiescent scene.
+	 */
+	private final Map<Long, Integer> fallbackEpoch = new ConcurrentHashMap<>();
 
 	private final NoPackVoxelShader shader = new NoPackVoxelShader();
 	private final Matrix4f mvp = new Matrix4f();
@@ -71,9 +78,15 @@ public final class VoxelRenderer {
 		return meshes.containsKey(regionKey);
 	}
 
-	/** Snapshot of regions still showing flat fallback color; the scheduler re-meshes them after new bakes. */
-	public java.util.List<Long> fallbackRegions() {
-		return new java.util.ArrayList<>(fallbackRegions);
+	/** Fallback regions meshed before {@code currentEpoch} (newer bakes may now texture them). Scheduler re-meshes these. */
+	public java.util.List<Long> fallbackRegionsStaleAt(int currentEpoch) {
+		java.util.List<Long> stale = new java.util.ArrayList<>();
+		for (Map.Entry<Long, Integer> e : fallbackEpoch.entrySet()) {
+			if (e.getValue() < currentEpoch) {
+				stale.add(e.getKey());
+			}
+		}
+		return stale;
 	}
 
 	public int meshCount() {
@@ -98,8 +111,8 @@ public final class VoxelRenderer {
 		}
 	}
 
-	/** Render thread: turn pending vertex data into GPU meshes, bounded per frame. */
-	public void processUploads(int budget) {
+	/** Render thread: turn pending vertex data into GPU meshes, bounded per frame. {@code bakeEpoch} stamps fallback regions. */
+	public void processUploads(int budget, int bakeEpoch) {
 		VoxelMesher.MeshData data;
 		while (budget-- > 0 && (data = uploadQueue.poll()) != null) {
 			long key = data.regionKey();
@@ -109,9 +122,9 @@ public final class VoxelRenderer {
 				old.delete();
 			}
 			if (mesh.usedFallback) {
-				fallbackRegions.add(key);
+				fallbackEpoch.put(key, bakeEpoch);
 			} else {
-				fallbackRegions.remove(key);
+				fallbackEpoch.remove(key);
 			}
 			if (totalUploaded == 0) {
 				Iris.logger.info("Horizon: voxel render path live (first mesh L" + data.level()
@@ -136,6 +149,7 @@ public final class VoxelRenderer {
 			if (cx * cx + cz * cz > keep * keep) {
 				VoxelRegionMesh mesh = e.getValue();
 				it.remove();
+				fallbackEpoch.remove(key);
 				RenderSystem.recordRenderCall(mesh::delete);
 			}
 		}
@@ -143,7 +157,7 @@ public final class VoxelRenderer {
 
 	/** Render thread. Draws every visible region mesh, sampling the photo atlas (flat color where unbaked). */
 	public void render(Matrix4f modelView, Matrix4f projection, net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery) {
-		processUploads(HorizonConfig.get().getMaxUploadsPerFrame());
+		processUploads(HorizonConfig.get().getMaxUploadsPerFrame(), bakery.epoch());
 		if (meshes.isEmpty() || !shader.ensure()) {
 			return;
 		}
@@ -375,7 +389,7 @@ public final class VoxelRenderer {
 			}
 			inFlight.clear();
 		}
-		fallbackRegions.clear();
+		fallbackEpoch.clear();
 		for (VoxelRegionMesh mesh : meshes.values()) {
 			mesh.delete();
 		}

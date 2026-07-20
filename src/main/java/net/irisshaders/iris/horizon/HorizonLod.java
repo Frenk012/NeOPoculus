@@ -62,8 +62,6 @@ public final class HorizonLod {
 	private final VoxelColorTable voxelColorTable = new VoxelColorTable(voxelEngine.palettes());
 	/** Photo-atlas bakery: renders each block face into the atlas the voxel LOD samples (M4). */
 	private final net.irisshaders.iris.horizon.voxel.model.VoxelBakery voxelBakery = new net.irisshaders.iris.horizon.voxel.model.VoxelBakery();
-	/** Bakery epoch seen at the last schedule pass; re-mesh fallback regions when it advances. */
-	private int lastBakeEpoch;
 	/** Bakes uploaded to the atlas per frame (render thread). */
 	private static final int MAX_VOXEL_BAKES_PER_FRAME = 8;
 	/** Bounded voxel mesh builds queued per client tick. */
@@ -411,16 +409,16 @@ public final class HorizonLod {
 		}
 
 		// New photo bakes landed → re-mesh the regions still showing flat
-		// fallback color so they pick up the real textures.
+		// fallback color so they pick up the real textures. Level-triggered per
+		// region (each fallback region carries the epoch it was meshed at), so a
+		// region that joins the set after an epoch bump is still re-meshed rather
+		// than being stranded flat by a missed global edge.
 		int bakeEpoch = voxelBakery.epoch();
-		if (bakeEpoch != lastBakeEpoch) {
-			lastBakeEpoch = bakeEpoch;
-			for (long key : voxelRenderer.fallbackRegions()) {
-				if (scheduled[0] >= MAX_VOXEL_SCHEDULED_PER_TICK) {
-					break;
-				}
-				submitVoxelBuild(store, colors, palettes, key, worldMinY, worldMaxY, scheduled);
+		for (long key : voxelRenderer.fallbackRegionsStaleAt(bakeEpoch)) {
+			if (scheduled[0] >= MAX_VOXEL_SCHEDULED_PER_TICK) {
+				break;
 			}
+			submitVoxelBuild(store, colors, palettes, key, worldMinY, worldMaxY, scheduled);
 		}
 		for (int lvl = 0; lvl <= VoxelConstants.MAX_LEVEL && scheduled[0] < MAX_VOXEL_SCHEDULED_PER_TICK; lvl++) {
 			int span = VoxelRegionKey.regionSpanBlocks(lvl);

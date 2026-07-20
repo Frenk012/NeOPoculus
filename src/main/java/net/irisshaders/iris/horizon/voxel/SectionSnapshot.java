@@ -8,8 +8,12 @@ package net.irisshaders.iris.horizon.voxel;
  * missing neighbor stays AIR, which emits a boundary wall — the intended
  * frontier / cross-level seam behavior.
  *
- * <p>Reads go through {@link VoxelStore#acquire} (HOT/WARM only, never disk),
- * so a section evicted to disk simply reads as absent. All section copies are
+ * <p>Reads go through {@link VoxelStore#acquireBlocking} (HOT / WARM / disk
+ * fault, never creating), so a region that exists only on disk — the whole
+ * persisted LOD on a fresh world load — is faulted into residency and rendered
+ * instead of staying invisible until a chunk load happens to ingest it. The
+ * scheduler's per-tick region budget rate-limits the disk reads. A key that is
+ * genuinely absent everywhere still reads as AIR. All section copies are
  * guarded: a concurrent save cycle can recycle a section's array mid-copy, so
  * an NPE degrades that section to AIR rather than aborting the region.
  */
@@ -30,7 +34,7 @@ public final class SectionSnapshot {
 	/** @return false when the core section is absent or all-air (caller skips it). */
 	public boolean capture(VoxelStore store, int level, int sx, int sy, int sz) {
 		long coreKey = SectionKey.pack(level, sx, sy, sz);
-		VoxelSection core = store.acquire(coreKey);
+		VoxelSection core = store.acquireBlocking(coreKey);
 		if (core == null || core.nonAirCount() == 0) {
 			return false;
 		}
@@ -41,7 +45,7 @@ public final class SectionSnapshot {
 		}
 		for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
 			long nKey = SectionKey.faceNeighbor(coreKey, face);
-			VoxelSection neighbor = store.acquire(nKey);
+			VoxelSection neighbor = store.acquireBlocking(nKey);
 			if (neighbor != null) {
 				fillNeighbor(neighbor, face);
 			}

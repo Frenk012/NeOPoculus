@@ -103,9 +103,10 @@ public final class VoxelMesher {
 											buf = grown;
 										}
 										int state = VoxelCell.stateId(key);
-										int slot = metadata.slotOf(state, face);
-										if (slot == 0 && !metadata.isBaked(state)) {
-											bakery.requestBake(state);
+										int biome = VoxelCell.biomeId(key);
+										int slot = metadata.slotOf(state, biome, face);
+										if (slot == 0 && !metadata.isBaked(state, biome)) {
+											bakery.requestBake(state, biome);
 										}
 										if (slot == 0) {
 											usedFallback[0] = true;

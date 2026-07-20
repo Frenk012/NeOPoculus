@@ -7,23 +7,27 @@ import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.BakedModel;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.BlockAndTintGetter;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions;
 
-import java.util.List;
-
 /**
- * Bakes one block face into a 16x16 RGBA "photo" for the atlas (M4 v1). Rather
- * than software-rasterizing the 3D model, it reads the face quad's sprite
- * pixels directly (via {@link SpriteContentsAccessor}), downsamples to 16x16,
- * and multiplies in the default (plains) biome tint for tinted quads so grass,
- * foliage and water are coloured. This is exact for full cubes — the vast
- * majority of terrain — and a reasonable approximation for non-cube blocks. A
- * true 3D bake per design-bakery-atlas.md is a later refinement.
+ * Bakes one block face into a 16x16 RGBA "photo" for the atlas (M4). Rather than
+ * software-rasterizing the 3D model, it reads the face quad's sprite pixels
+ * directly (via {@link SpriteContentsAccessor}), downsamples to 16x16, and
+ * multiplies in the biome tint for tinted quads so grass, foliage and water are
+ * coloured for the actual biome being baked (a swamp's murky grass differs from
+ * a plains' bright grass). The tint is resolved through a {@link BiomeTintGetter}
+ * so vanilla's own per-block classification (grass / foliage / water) is reused.
+ * Exact for full cubes — the vast majority of terrain — and a reasonable
+ * approximation for non-cube blocks; a true 3D bake is a later refinement.
  *
  * <p>Runs on the render/client thread (the vanilla model + sprite APIs are not
  * thread-safe). Output ints are {@code 0xRRGGBBAA}, row-major {@code y*16 + x}.
@@ -31,8 +35,19 @@ import java.util.List;
 public final class PhotoBaker {
 	private static final int OUT = 16;
 	private static final RandomSource RANDOM = RandomSource.create(42L);
+	/** Fixed position for tint queries; only its X/Z matter (swamp grass noise). */
+	private static final BlockPos TINT_POS = new BlockPos(0, 64, 0);
 
 	private PhotoBaker() {
+	}
+
+	/**
+	 * A baked face photo and whether it was biome-tinted. {@code tinted} drives
+	 * the metadata tier: untinted faces are cached once and shared by every
+	 * biome, tinted faces are cached per biome. {@code photo} is null when the
+	 * face has no usable texture.
+	 */
+	public record Baked(int[] photo, boolean tinted) {
 	}
 
 	/** DH face order (VoxelConstants) -> vanilla Direction. */
@@ -40,20 +55,22 @@ public final class PhotoBaker {
 		Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST
 	};
 
-	/** @return the 256-pixel RGBA photo for {@code state}'s {@code face}, or null if it has no usable texture. */
-	public static int[] bakeFace(BlockState state, int face) {
+	/** @return the baked photo for {@code state}'s {@code face} in {@code biome}, or null if it has no usable texture. */
+	public static Baked bakeFace(BlockState state, Biome biome, int face) {
 		try {
 			Minecraft mc = Minecraft.getInstance();
+			BlockAndTintGetter tintGetter =
+				(biome != null && mc.level != null) ? new BiomeTintGetter(mc.level, biome) : null;
 			BakedModel model = mc.getBlockRenderer().getBlockModel(state);
 			Direction dir = FACE_DIR[face];
 			if (model != mc.getModelManager().getMissingModel()) {
-				int[] composited = compositeFace(mc, model, state, dir);
+				Baked composited = compositeFace(mc, model, state, dir, tintGetter);
 				if (composited != null) {
 					return composited;
 				}
 			}
 			// Fluids (water/lava) render with no baked model.
-			return bakeFluid(mc, state);
+			return bakeFluid(mc, state, biome);
 		} catch (Throwable t) {
 			return null;
 		}
@@ -65,7 +82,8 @@ public final class PhotoBaker {
 	 * untinted dirt base first, then the biome-tinted grass overlay over it,
 	 * rather than one quad forcing the whole face all-green or all-dirt.
 	 */
-	private static int[] compositeFace(Minecraft mc, BakedModel model, BlockState state, Direction dir) {
+	private static Baked compositeFace(Minecraft mc, BakedModel model, BlockState state, Direction dir,
+									   BlockAndTintGetter tintGetter) {
 		java.util.List<BakedQuad> quads = new java.util.ArrayList<>(model.getQuads(state, dir, RANDOM));
 		for (BakedQuad q : model.getQuads(state, null, RANDOM)) {
 			if (q.getDirection() == dir) {
@@ -77,6 +95,7 @@ public final class PhotoBaker {
 		}
 		int[] acc = new int[16 * 16]; // 0 = transparent
 		boolean any = false;
+		boolean tinted = false;
 		for (BakedQuad q : quads) {
 			TextureAtlasSprite sprite = q.getSprite();
 			NativeImage image = ((SpriteContentsAccessor) sprite.contents()).getOriginalImage();
@@ -85,12 +104,13 @@ public final class PhotoBaker {
 				continue;
 			}
 			if (q.isTinted()) {
-				applyTint(layer, tintColor(mc, state, q.getTintIndex()));
+				applyTint(layer, tintColor(mc, state, q.getTintIndex(), tintGetter));
+				tinted = true;
 			}
 			over(acc, layer);
 			any = true;
 		}
-		return any ? acc : null;
+		return any ? new Baked(acc, tinted) : null;
 	}
 
 	/** Src-over composite of {@code src} onto {@code dst}, both {@code 0xRRGGBBAA}. */
@@ -118,8 +138,8 @@ public final class PhotoBaker {
 		}
 	}
 
-	/** Bakes a fluid's still texture (water/lava have no baked model), tinted so water reads blue. */
-	private static int[] bakeFluid(Minecraft mc, BlockState state) {
+	/** Bakes a fluid's still texture (water/lava have no baked model), tinted so water reads its biome color. */
+	private static Baked bakeFluid(Minecraft mc, BlockState state, Biome biome) {
 		FluidState fluid = state.getFluidState();
 		if (fluid.isEmpty()) {
 			return null;
@@ -136,23 +156,26 @@ public final class PhotoBaker {
 			if (photo == null) {
 				return null;
 			}
-			// The still texture is greyscale; the tint colors it. getTintColor is
-			// often white (biome-driven), so fall back to the plains water color.
-			int tint = ext.getTintColor() & 0xFFFFFF;
-			if (tint == 0xFFFFFF) {
-				tint = 0x3F76E4; // plains water
+			// Water's still texture is greyscale and biome-tinted; use the baked
+			// biome's water color (swamp/cold/ocean differ). Other fluids (lava)
+			// carry their own color, so leave them untinted.
+			boolean water = fluid.is(FluidTags.WATER);
+			if (water) {
+				applyTint(photo, biome != null ? biome.getWaterColor() : 0x3F76E4);
 			}
-			applyTint(photo, tint);
-			return photo;
+			return new Baked(photo, water);
 		} catch (Throwable t) {
 			return null;
 		}
 	}
 
-	/** Default (no position) tint for a tinted quad, {@code 0xRRGGBB}, or -1 if none. */
-	private static int tintColor(Minecraft mc, BlockState state, int tintIndex) {
+	/** Biome tint for a tinted quad via {@code tintGetter} (or the default when none), {@code 0xRRGGBB}, or -1 if none. */
+	private static int tintColor(Minecraft mc, BlockState state, int tintIndex, BlockAndTintGetter tintGetter) {
 		try {
 			int idx = tintIndex >= 0 ? tintIndex : 0;
+			if (tintGetter != null) {
+				return mc.getBlockColors().getColor(state, tintGetter, TINT_POS, idx);
+			}
 			return mc.getBlockColors().getColor(state, null, null, idx);
 		} catch (Throwable t) {
 			return -1;

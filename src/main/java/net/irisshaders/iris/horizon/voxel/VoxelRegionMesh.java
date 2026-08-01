@@ -20,6 +20,8 @@ public final class VoxelRegionMesh {
 	public final int bakeEpoch;
 	/** Quads whose face light was fully dark (sky 0 and block 0); diagnostic for the LOD-blackening bug. */
 	public final int darkQuads;
+	/** Trailing quads that are translucent; the opaque run is everything before them. */
+	public final int translucentQuads;
 	private int vao;
 	private int vbo;
 
@@ -32,6 +34,7 @@ public final class VoxelRegionMesh {
 		this.usedFallback = data.usedFallback();
 		this.bakeEpoch = data.bakeEpoch();
 		this.darkQuads = data.darkQuads();
+		this.translucentQuads = data.translucentQuads();
 
 		vao = GL33C.glGenVertexArrays();
 		vbo = GL33C.glGenBuffers();
@@ -58,9 +61,32 @@ public final class VoxelRegionMesh {
 		GL33C.glBindBuffer(GL33C.GL_ELEMENT_ARRAY_BUFFER, 0);
 	}
 
-	public void draw() {
+	/** Draws the opaque run: the quads before the translucent tail. */
+	public void drawOpaque() {
+		int opaque = quads - translucentQuads;
+		if (opaque <= 0) {
+			return;
+		}
 		GL33C.glBindVertexArray(vao);
-		GL33C.glDrawElements(GL33C.GL_TRIANGLES, quads * 6, GL33C.GL_UNSIGNED_INT, 0L);
+		GL33C.glDrawElements(GL33C.GL_TRIANGLES, opaque * 6, GL33C.GL_UNSIGNED_INT, 0L);
+	}
+
+	/**
+	 * Draws the translucent tail. The shared index buffer holds absolute vertex
+	 * indices per quad slot, so the tail is reached with a byte offset into the
+	 * element buffer — no base-vertex call and no second VBO.
+	 */
+	public void drawTranslucent() {
+		if (translucentQuads <= 0) {
+			return;
+		}
+		long offsetBytes = (long) (quads - translucentQuads) * 6L * Integer.BYTES;
+		GL33C.glBindVertexArray(vao);
+		GL33C.glDrawElements(GL33C.GL_TRIANGLES, translucentQuads * 6, GL33C.GL_UNSIGNED_INT, offsetBytes);
+	}
+
+	public boolean hasTranslucent() {
+		return translucentQuads > 0;
 	}
 
 	public void delete() {

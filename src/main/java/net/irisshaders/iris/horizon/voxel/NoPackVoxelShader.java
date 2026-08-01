@@ -120,7 +120,9 @@ public final class NoPackVoxelShader {
 			float l = 0.2 + 0.8 * max(block, sky * u_skyFactor);
 			vec3 rgb = base * l * faceShade[vFace];
 			float f = clamp((length(vRelPos.xz) - u_fogStart) / (u_fogEnd - u_fogStart), 0.0, 1.0);
-			fragColor = vec4(mix(rgb, u_fogColor.rgb, f), 1.0);
+			// Vertex alpha carries translucency (water 179/255); it is 255 for
+			// every opaque face, so the opaque pass is unaffected.
+			fragColor = vec4(mix(rgb, u_fogColor.rgb, f), vColor.a);
 		}
 		""";
 

@@ -25,6 +25,8 @@ public final class VoxelMesher {
 	private static final int CAP = VoxelConstants.MERGE_CAP;   // 16
 	private static final long LIGHT_MASK = VoxelConstants.LIGHT_MASK;
 	private static final int MAX_BYTES = VoxelConstants.MAX_QUADS_PER_REGION * 4 * LodVertexFormatV2.STRIDE;
+	/** Vertex alpha for translucent faces (design-mesh-render.md section 2): water reads as water, not glass. */
+	private static final int TRANSLUCENT_ALPHA = 179;
 
 	/**
 	 * {@code bakeEpoch} is the bakery epoch read at the START of the build. The
@@ -33,8 +35,15 @@ public final class VoxelMesher {
 	 * still counts as newer and triggers exactly one more re-mesh — the region
 	 * cannot be stranded flat by an epoch edge consumed before it was uploaded.
 	 */
+	/**
+	 * {@code quads} counts every quad in the buffer; the first
+	 * {@code quads - translucentQuads} are opaque and the rest translucent.
+	 * Keeping both in one buffer, opaque first, lets the renderer draw two
+	 * passes as two plain element draws at different byte offsets — no second
+	 * VBO, no second VAO, and the shared index buffer works unchanged.
+	 */
 	public record MeshData(long regionKey, int level, ByteBuffer vertexData, int quads, float minY, float maxY,
-						   boolean usedFallback, int bakeEpoch, int darkQuads) {
+						   boolean usedFallback, int bakeEpoch, int darkQuads, int translucentQuads) {
 		public void free() {
 			MemoryUtil.memFree(vertexData);
 		}
@@ -53,6 +62,10 @@ public final class VoxelMesher {
 		int[] faceLight = new int[N * N];
 
 		ByteBuffer buf = MemoryUtil.memAlloc(1 << 21); // 2 MB, grows on demand
+		// Translucent faces accumulate separately and are appended after the
+		// opaque ones, so the finished buffer is opaque-then-translucent.
+		ByteBuffer tbuf = MemoryUtil.memAlloc(1 << 18);
+		int tQuads = 0;
 		int quads = 0;
 		// Diagnostic: quads whose face light is fully dark (sky 0 AND block 0). A
 		// region flipping from mostly-lit to mostly-dark across a re-mesh is the
@@ -104,7 +117,23 @@ public final class VoxelMesher {
 												faceKey[(v + j) * N + u + k] = 0;
 											}
 										}
-										if (buf.position() + 4 * LodVertexFormatV2.STRIDE > buf.capacity()) {
+										int state = VoxelCell.stateId(key);
+										int biome = VoxelCell.biomeId(key);
+										// The merge key carries the state, so a merged run is
+										// uniformly translucent or uniformly opaque.
+										boolean translucent = palettes.isTranslucent(state);
+										if (translucent) {
+											if (tbuf.position() + 4 * LodVertexFormatV2.STRIDE > tbuf.capacity()) {
+												ByteBuffer grown = maybeGrow(tbuf);
+												if (grown == null) {
+													capped = true;
+													Iris.logger.warn("Horizon: voxel region " + rx + "," + rz
+														+ " L" + level + " hit the quad cap; truncated");
+													break;
+												}
+												tbuf = grown;
+											}
+										} else if (buf.position() + 4 * LodVertexFormatV2.STRIDE > buf.capacity()) {
 											ByteBuffer grown = maybeGrow(buf);
 											if (grown == null) {
 												capped = true;
@@ -114,8 +143,6 @@ public final class VoxelMesher {
 											}
 											buf = grown;
 										}
-										int state = VoxelCell.stateId(key);
-										int biome = VoxelCell.biomeId(key);
 										int slot = metadata.slotOf(state, biome, face);
 										// Only a PENDING bake justifies flagging this region for
 										// a re-mesh. A state that is already baked and still has
@@ -131,10 +158,14 @@ public final class VoxelMesher {
 										if (lightMeta == 0) {
 											darkQuads++;
 										}
-										float[] yspan = emitQuad(buf, colors, key, lightMeta, slot,
+										float[] yspan = emitQuad(translucent ? tbuf : buf, colors, key,
+											lightMeta, slot, translucent ? TRANSLUCENT_ALPHA : 255,
 											face, w, u, v, su, sv, sxLocal, szLocal, sy, cellSize);
 										minY = Math.min(minY, yspan[0]);
 										maxY = Math.max(maxY, yspan[1]);
+										if (translucent) {
+											tQuads++;
+										}
 										quads++;
 										if (capped) {
 											break;
@@ -172,16 +203,43 @@ public final class VoxelMesher {
 			}
 		} catch (Throwable t) {
 			MemoryUtil.memFree(buf);
+			MemoryUtil.memFree(tbuf);
 			throw t;
 		}
 
 		if (quads == 0) {
 			MemoryUtil.memFree(buf);
+			MemoryUtil.memFree(tbuf);
 			return null;
 		}
+		// Append the translucent run after the opaque one so the finished buffer
+		// is a single VBO the renderer can draw as two element ranges.
+		if (tQuads > 0) {
+			int tBytes = tbuf.position();
+			if (buf.position() + tBytes > buf.capacity()) {
+				ByteBuffer grown = growTo(buf, buf.position() + tBytes);
+				if (grown == null) {
+					// No room for the translucent run: ship the opaque geometry
+					// rather than losing the whole region.
+					Iris.logger.warn("Horizon: voxel region " + rx + "," + rz + " L" + level
+						+ " dropped its translucent geometry at the quad cap");
+					tQuads = 0;
+					tBytes = 0;
+				} else {
+					buf = grown;
+				}
+			}
+			if (tBytes > 0) {
+				tbuf.limit(tBytes);
+				tbuf.position(0);
+				buf.put(tbuf);
+			}
+		}
+		MemoryUtil.memFree(tbuf);
 		buf.limit(buf.position());
 		buf.position(0);
-		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0], startEpoch, darkQuads);
+		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0], startEpoch,
+			darkQuads, tQuads);
 	}
 
 	/** Per face (DH order -Y,+Y,-Z,+Z,-X,+X): the axis it is perpendicular to, 0=X 1=Y 2=Z. */
@@ -430,11 +488,16 @@ public final class VoxelMesher {
 	}
 
 	private static ByteBuffer maybeGrow(ByteBuffer buf) {
+		return growTo(buf, buf.capacity() * 2);
+	}
+
+	/** Grows to at least {@code needed} bytes, or null when that exceeds the cap. */
+	private static ByteBuffer growTo(ByteBuffer buf, int needed) {
 		int cap = buf.capacity();
-		if (cap >= MAX_BYTES) {
+		if (cap >= MAX_BYTES || needed > MAX_BYTES) {
 			return null;
 		}
-		int newCap = Math.min(MAX_BYTES, cap * 2);
+		int newCap = Math.min(MAX_BYTES, Math.max(needed, cap * 2));
 		ByteBuffer grown = MemoryUtil.memAlloc(newCap);
 		int pos = buf.position();
 		buf.position(0);
@@ -535,7 +598,7 @@ public final class VoxelMesher {
 	 * {@code [minY, maxY]} of the emitted vertices (world-space, un-biased).
 	 */
 	private static float[] emitQuad(ByteBuffer buf, VoxelColorTable colors, long key, int lightMeta, int atlasSlot,
-									int face, int w, int u, int v, int su, int sv,
+									int alpha, int face, int w, int u, int v, int su, int sv,
 									int sxLocal, int szLocal, int sy, int cellSize) {
 		int state = VoxelCell.stateId(key);
 		int rgb = colors.colorOf(state);
@@ -574,8 +637,9 @@ public final class VoxelMesher {
 			// Positions go out in 1/16-block sub-units so partial-height shapes
 			// (slabs, snow, carpets) can be expressed; Y_BIAS is a multiple of 16
 			// so the shader's fract-based per-cell UVs are unaffected.
-			LodVertexFormatV2.writeVertex(buf, rlx * U, posY * U, rlz * U, lightMeta, rgb,
-				0 /*material*/, face, atlasSlot, biome, face /*faceMeta*/, 0 /*flags*/);
+			LodVertexFormatV2.writeVertex(buf, rlx * U, posY * U, rlz * U, lightMeta, rgb, alpha,
+				0 /*material*/, face, atlasSlot, biome, face /*faceMeta*/,
+				alpha < 255 ? 1 : 0 /*flags: bit0 = translucent, for the M6 iris path*/);
 		}
 		return new float[]{minY, maxY};
 	}

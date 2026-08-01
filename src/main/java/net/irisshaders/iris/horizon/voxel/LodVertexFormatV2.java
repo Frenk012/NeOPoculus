@@ -50,6 +50,18 @@ public final class LodVertexFormatV2 {
 	public static void writeVertex(ByteBuffer buf, int rlx, int posYBiased, int rlz,
 								   int lightMeta, int rgb, int material, int normalIdx,
 								   int atlasSlot, int biomeId, int faceMeta, int flags) {
+		writeVertex(buf, rlx, posYBiased, rlz, lightMeta, rgb, 0xFF,
+			material, normalIdx, atlasSlot, biomeId, faceMeta, flags);
+	}
+
+	/**
+	 * As above with an explicit vertex alpha. The alpha byte is part of the
+	 * colour attribute the DH-compatible layout already carries, so translucent
+	 * water needs no new attribute and no stride change.
+	 */
+	public static void writeVertex(ByteBuffer buf, int rlx, int posYBiased, int rlz,
+								   int lightMeta, int rgb, int alpha, int material, int normalIdx,
+								   int atlasSlot, int biomeId, int faceMeta, int flags) {
 		int base = buf.position();
 		buf.putShort(base + POS_OFFSET, (short) rlx);
 		buf.putShort(base + POS_OFFSET + 2, (short) posYBiased);
@@ -58,7 +70,7 @@ public final class LodVertexFormatV2 {
 		buf.put(base + COLOR_OFFSET, (byte) (rgb >> 16));
 		buf.put(base + COLOR_OFFSET + 1, (byte) (rgb >> 8));
 		buf.put(base + COLOR_OFFSET + 2, (byte) rgb);
-		buf.put(base + COLOR_OFFSET + 3, (byte) 0xFF);
+		buf.put(base + COLOR_OFFSET + 3, (byte) alpha);
 		buf.put(base + MATERIAL_OFFSET, (byte) material);
 		buf.put(base + NORMAL_OFFSET, (byte) normalIdx);
 		buf.put(base + EXTRA_OFFSET + 2, (byte) 0);

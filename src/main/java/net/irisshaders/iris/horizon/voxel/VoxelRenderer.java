@@ -37,6 +37,9 @@ public final class VoxelRenderer {
 	 */
 	private final Map<Long, Integer> fallbackEpoch = new ConcurrentHashMap<>();
 
+	/** Reused across frames: the visible regions that have translucent geometry to draw last. */
+	private final java.util.List<VoxelRegionMesh> translucentPending = new java.util.ArrayList<>();
+
 	private final NoPackVoxelShader shader = new NoPackVoxelShader();
 	private final Matrix4f mvp = new Matrix4f();
 	private final FrustumIntersection frustum = new FrustumIntersection();
@@ -137,6 +140,41 @@ public final class VoxelRenderer {
 			inFlight.remove(key);
 			data.free();
 		}
+	}
+
+	/**
+	 * Second pass: the translucent tails of every visible region, drawn after all
+	 * opaque geometry and sorted back to front so overlapping water surfaces
+	 * blend in the right order. Depth writing stays ON — distant water is
+	 * essentially one surface, and writing depth stops the far side of a lake
+	 * from blending through the near side. The sort runs over at most a few
+	 * hundred regions on a reused array, so it costs nothing measurable.
+	 */
+	private void drawTranslucentPass(double camX, double camY, double camZ, float relY) {
+		translucentPending.sort((a, b) -> Double.compare(
+			regionDistSq(b, camX, camY, camZ), regionDistSq(a, camX, camY, camZ)));
+
+		GL33C.glEnable(GL33C.GL_BLEND);
+		GL33C.glBlendFunc(GL33C.GL_SRC_ALPHA, GL33C.GL_ONE_MINUS_SRC_ALPHA);
+		for (VoxelRegionMesh mesh : translucentPending) {
+			int level = mesh.level;
+			int span = VoxelRegionKey.regionSpanBlocks(level);
+			float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
+			float oz = (float) ((double) VoxelRegionKey.rz(mesh.regionKey) * span - camZ);
+			shader.setOffset(ox, relY - VoxelConstants.Y_BIAS, oz);
+			shader.setCellSize(1 << level);
+			mesh.drawTranslucent();
+		}
+		GL33C.glDisable(GL33C.GL_BLEND);
+		translucentPending.clear();
+	}
+
+	private static double regionDistSq(VoxelRegionMesh mesh, double camX, double camY, double camZ) {
+		int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
+		double dx = (double) VoxelRegionKey.rx(mesh.regionKey) * span + span * 0.5 - camX;
+		double dz = (double) VoxelRegionKey.rz(mesh.regionKey) * span + span * 0.5 - camZ;
+		double dy = (mesh.minY + mesh.maxY) * 0.5 - camY;
+		return dx * dx + dy * dy + dz * dz;
 	}
 
 	/** Drops meshes beyond their level's keep radius. Any thread (map is concurrent). */
@@ -252,8 +290,17 @@ public final class VoxelRenderer {
 			}
 			shader.setOffset(ox, relY - VoxelConstants.Y_BIAS, oz);
 			shader.setCellSize(1 << level);
-			mesh.draw();
+			mesh.drawOpaque();
 			drawn++;
+			if (mesh.hasTranslucent()) {
+				// Defer: translucent geometry must be drawn after ALL opaque
+				// geometry, and back to front among itself.
+				translucentPending.add(mesh);
+			}
+		}
+
+		if (!translucentPending.isEmpty()) {
+			drawTranslucentPass(camX, camY, camZ, relY);
 		}
 		drawnLastFrame = drawn;
 

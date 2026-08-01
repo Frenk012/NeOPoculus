@@ -18,6 +18,7 @@ import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -116,6 +117,21 @@ public final class VoxelPalettes {
 	private volatile boolean[] leafById;
 	/** Packed {@link VoxelShapeClass} per state: how the block occupies its cell. */
 	private volatile int[] shapeById;
+	/** Whether the state renders in the translucent layer (water, glass, ice). */
+	private volatile boolean[] translucentById;
+	/** The state's own light emission 0-15 (glowstone, lava, torches). */
+	private volatile byte[] emissiveById;
+	/**
+	 * Fluid identity per state: 0 for non-fluids, otherwise a small interned id
+	 * shared by every state of the same fluid. The mesher culls the face between
+	 * two cells of the same fluid, which keeps a body of water from being sliced
+	 * by internal surfaces where two flow levels meet — including in cells
+	 * captured before flow levels were canonicalised.
+	 */
+	private volatile int[] fluidById;
+	/** Interned fluid types, index+1 is the id stored in {@link #fluidById}. */
+	private final java.util.List<net.minecraft.world.level.material.Fluid> fluidTypes =
+		java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 	/** Fixed 512 entries: MAX_BIOME_IDS is small enough to never grow. */
 	private volatile ResourceLocation[] biomesById;
 
@@ -144,6 +160,9 @@ public final class VoxelPalettes {
 		opacityById = new byte[INITIAL_STATE_CAPACITY];
 		leafById = new boolean[INITIAL_STATE_CAPACITY];
 		shapeById = new int[INITIAL_STATE_CAPACITY];
+		translucentById = new boolean[INITIAL_STATE_CAPACITY];
+		emissiveById = new byte[INITIAL_STATE_CAPACITY];
+		fluidById = new int[INITIAL_STATE_CAPACITY];
 		biomesById = new ResourceLocation[VoxelConstants.MAX_BIOME_IDS];
 
 		statesById[0] = Blocks.AIR.defaultBlockState();
@@ -181,7 +200,32 @@ public final class VoxelPalettes {
 		if (id != null) {
 			return id;
 		}
+		// Collapse a fluid's flowing levels onto its source state, the same way
+		// air variants collapse onto id 0. At LOD scale the level is invisible,
+		// but distinct ids would fragment the greedy merge and leave internal
+		// seams inside a body of water where two levels meet. The original state
+		// is still registered as an alias, so the hot path stays one map hit.
+		BlockState canonical = canonicalFluid(state);
+		if (canonical != state) {
+			int canonicalId = idFor(canonical);
+			stateToId.putIfAbsent(state, canonicalId);
+			return canonicalId;
+		}
 		return registerState(state);
+	}
+
+	/** A pure fluid block's source-level state, or {@code state} itself for anything else. */
+	private static BlockState canonicalFluid(BlockState state) {
+		try {
+			if (!(state.getBlock() instanceof LiquidBlock) || state.getFluidState().isEmpty()) {
+				return state;
+			}
+			return state.hasProperty(LiquidBlock.LEVEL) && state.getValue(LiquidBlock.LEVEL) != 0
+				? state.setValue(LiquidBlock.LEVEL, 0)
+				: state;
+		} catch (Throwable t) {
+			return state;
+		}
 	}
 
 	private int registerState(BlockState state) {
@@ -204,7 +248,12 @@ public final class VoxelPalettes {
 			leafById[id] = leaf;
 			int shape = VoxelShapeClass.classify(state);
 			shapeById[id] = shape;
-			opacityById[id] = computeOpacity(state, leaf, shape);
+			int fluid = internFluid(state);
+			fluidById[id] = fluid;
+			boolean translucent = computeTranslucent(state);
+			translucentById[id] = translucent;
+			emissiveById[id] = computeEmission(state);
+			opacityById[id] = computeOpacity(state, leaf, shape, fluid != 0, translucent);
 			// Slot filled before the id is published anywhere: the map put
 			// (and the caller storing the id into a section under its
 			// monitor) supplies the happens-before for lock-free readers.
@@ -446,7 +495,12 @@ public final class VoxelPalettes {
 				// can never carry a stale class after a resource/mod change.
 				int shape = VoxelShapeClass.classify(state);
 				shapeById[id] = shape;
-				opacityById[id] = computeOpacity(state, leaf, shape);
+				int fluid = internFluid(state);
+				fluidById[id] = fluid;
+				boolean translucent = computeTranslucent(state);
+				translucentById[id] = translucent;
+				emissiveById[id] = computeEmission(state);
+				opacityById[id] = computeOpacity(state, leaf, shape, fluid != 0, translucent);
 				stateToId.put(state, id);
 			}
 		}
@@ -700,16 +754,25 @@ public final class VoxelPalettes {
 		byte[] opacity = new byte[newLength];
 		boolean[] leaf = new boolean[newLength];
 		int[] shape = new int[newLength];
+		boolean[] translucent = new boolean[newLength];
+		byte[] emissive = new byte[newLength];
+		int[] fluid = new int[newLength];
 		System.arraycopy(statesById, 0, states, 0, statesById.length);
 		System.arraycopy(opacityById, 0, opacity, 0, opacityById.length);
 		System.arraycopy(leafById, 0, leaf, 0, leafById.length);
 		System.arraycopy(shapeById, 0, shape, 0, shapeById.length);
+		System.arraycopy(translucentById, 0, translucent, 0, translucentById.length);
+		System.arraycopy(emissiveById, 0, emissive, 0, emissiveById.length);
+		System.arraycopy(fluidById, 0, fluid, 0, fluidById.length);
 		// Republish fully-copied arrays; readers hold either the old or the
 		// new reference, both consistent for every already-issued id.
 		statesById = states;
 		opacityById = opacity;
 		leafById = leaf;
 		shapeById = shape;
+		translucentById = translucent;
+		emissiveById = emissive;
+		fluidById = fluid;
 	}
 
 	/**
@@ -718,9 +781,24 @@ public final class VoxelPalettes {
 	 * because modded overrides may throw off-thread — then occluders count
 	 * as 15 and everything else as barely-there 1.
 	 */
-	private static byte computeOpacity(BlockState state, boolean leafLike, int shape) {
+	private static byte computeOpacity(BlockState state, boolean leafLike, int shape,
+									   boolean fluid, boolean translucent) {
 		if (state.isAir()) {
 			return 0;
+		}
+		// A translucent fluid must not occlude: water reported 15 through
+		// canOcclude, which culled every seafloor face and left the ocean a solid
+		// lid. Lava stays fully opaque — it is translucent to nothing.
+		if (fluid) {
+			if (!translucent) {
+				return 15;
+			}
+			try {
+				return (byte) Math.max(1, Math.min(14,
+					state.getLightBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO)));
+			} catch (Throwable t) {
+				return 1;
+			}
 		}
 		// A state that does not fill its cell must never occlude: opacity 15 would
 		// cull the face of whatever is behind a fence or beside a slab, would let
@@ -746,6 +824,78 @@ public final class VoxelPalettes {
 		} catch (Throwable t) {
 			return (byte) (state.canOcclude() ? 15 : 1);
 		}
+	}
+
+	/**
+	 * Whether the state draws in the translucent layer. Read from the vanilla
+	 * render-type maps (static lookups, safe off-thread) so water, ice, glass and
+	 * modded equivalents all classify the way the game itself would.
+	 */
+	private static boolean computeTranslucent(BlockState state) {
+		try {
+			var fluid = state.getFluidState();
+			if (!fluid.isEmpty()) {
+				return net.minecraft.client.renderer.ItemBlockRenderTypes.getRenderLayer(fluid)
+					== net.minecraft.client.renderer.RenderType.translucent();
+			}
+			return net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(state)
+				== net.minecraft.client.renderer.RenderType.translucent();
+		} catch (Throwable t) {
+			try {
+				return state.getFluidState().is(net.minecraft.tags.FluidTags.WATER);
+			} catch (Throwable ignored) {
+				return false;
+			}
+		}
+	}
+
+	/** The state's own light emission (0-15); the mesher floors face light with it. */
+	private static byte computeEmission(BlockState state) {
+		try {
+			return (byte) Math.max(0, Math.min(15, state.getLightEmission()));
+		} catch (Throwable t) {
+			return 0;
+		}
+	}
+
+	/** Interns the state's fluid, returning its id (0 = not a fluid). */
+	private int internFluid(BlockState state) {
+		try {
+			var fluidState = state.getFluidState();
+			if (fluidState.isEmpty()) {
+				return 0;
+			}
+			net.minecraft.world.level.material.Fluid type = fluidState.getType();
+			synchronized (fluidTypes) {
+				for (int i = 0; i < fluidTypes.size(); i++) {
+					if (fluidTypes.get(i).isSame(type)) {
+						return i + 1;
+					}
+				}
+				fluidTypes.add(type);
+				return fluidTypes.size();
+			}
+		} catch (Throwable t) {
+			return 0;
+		}
+	}
+
+	/** Whether this state draws in the translucent pass. Any thread. */
+	public boolean isTranslucent(int stateId) {
+		boolean[] t = translucentById;
+		return stateId >= 0 && stateId < t.length && t[stateId];
+	}
+
+	/** The state's own light emission 0-15. Any thread. */
+	public int emissionOf(int stateId) {
+		byte[] e = emissiveById;
+		return stateId >= 0 && stateId < e.length ? e[stateId] : 0;
+	}
+
+	/** Fluid identity for a state; 0 means not a fluid. Any thread. */
+	public int fluidOf(int stateId) {
+		int[] f = fluidById;
+		return stateId >= 0 && stateId < f.length ? f[stateId] : 0;
 	}
 
 	/** Tag lookups can throw before tags are bound; treat that as not-leaf. */

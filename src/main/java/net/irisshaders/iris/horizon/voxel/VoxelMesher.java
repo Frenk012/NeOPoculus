@@ -516,8 +516,17 @@ public final class VoxelMesher {
 		if (VoxelCell.isAir(n)) {
 			return true;
 		}
+		int cs = VoxelCell.stateId(c);
 		int ns = VoxelCell.stateId(n);
-		return palettes.opacityOf(ns) < 15 && ns != VoxelCell.stateId(c);
+		// Never cut a surface inside one body of fluid. Flow levels are collapsed
+		// onto the source state at registration, but cells captured before that
+		// still hold distinct ids, and without this an ocean would be sliced by
+		// internal walls wherever two levels meet.
+		int fluid = palettes.fluidOf(cs);
+		if (fluid != 0 && fluid == palettes.fluidOf(ns)) {
+			return false;
+		}
+		return palettes.opacityOf(ns) < 15 && ns != cs;
 	}
 
 	/**

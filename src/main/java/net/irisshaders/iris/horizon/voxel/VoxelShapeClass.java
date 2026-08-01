@@ -80,6 +80,12 @@ public final class VoxelShapeClass {
 			if (state.isAir()) {
 				return DEFAULT;
 			}
+			// Fluids fill their cell but have NO collision shape, so the empty-shape
+			// branch below would classify water and lava as DROP and delete every
+			// ocean from the LOD. Decide on the fluid before ever asking for a shape.
+			if (!state.getFluidState().isEmpty()) {
+				return DEFAULT;
+			}
 			AABB bounds;
 			try {
 				var shape = state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);

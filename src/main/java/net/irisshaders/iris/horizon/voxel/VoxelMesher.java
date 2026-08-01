@@ -241,7 +241,11 @@ public final class VoxelMesher {
 						// the silhouette reads correctly. At coarser levels a cell
 						// spans several blocks and a cell-sized cross would be a
 						// giant billboard, so grass simply drops out with distance.
-						if (cellSize == 1) {
+						// Subsampled by position hash: plains grass covers nearly
+						// every surface cell and two quads apiece truncated whole
+						// regions at the quad cap. A stable hash keeps the same
+						// tufts across re-meshes, so the field does not shimmer.
+						if (cellSize == 1 && crossKept(baseX + x, baseWorldYCells + y, baseZ + z)) {
 							buf = emitCross(buf, snap, colors, metadata, bakery, c, state,
 								x, y, z, baseX, baseZ, baseWorldYCells, cellSize,
 								counters, span, usedFallback);
@@ -403,6 +407,20 @@ public final class VoxelMesher {
 		span[0] = Math.min(span[0], worldY0);
 		span[1] = Math.max(span[1], worldY1);
 		return buf;
+	}
+
+	/** Fraction of cross plants actually drawn, as a 1-in-N sample; the rest are skipped. */
+	private static final int CROSS_SAMPLE = 3;
+
+	/**
+	 * Whether this cell's plant is one of the kept samples. Deterministic in world
+	 * position, so the same tufts survive every re-mesh and a grass field does not
+	 * shimmer as regions rebuild.
+	 */
+	private static boolean crossKept(int x, int y, int z) {
+		int h = x * 0x27D4EB2D ^ y * 0x165667B1 ^ z * 0x9E3779B9;
+		h ^= h >>> 15;
+		return Math.floorMod(h, CROSS_SAMPLE) == 0;
 	}
 
 	/** Whether stepping one cell along {@code face} from (x,y,z) leaves the 32³ core. */

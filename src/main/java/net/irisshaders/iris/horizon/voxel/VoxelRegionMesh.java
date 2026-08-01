@@ -18,6 +18,8 @@ public final class VoxelRegionMesh {
 	public final boolean usedFallback;
 	/** Bakery epoch read when this mesh's build STARTED; the fallback re-mesh compares against it. */
 	public final int bakeEpoch;
+	/** Quads whose face light was fully dark (sky 0 and block 0); diagnostic for the LOD-blackening bug. */
+	public final int darkQuads;
 	private int vao;
 	private int vbo;
 
@@ -29,6 +31,7 @@ public final class VoxelRegionMesh {
 		this.maxY = data.maxY();
 		this.usedFallback = data.usedFallback();
 		this.bakeEpoch = data.bakeEpoch();
+		this.darkQuads = data.darkQuads();
 
 		vao = GL33C.glGenVertexArrays();
 		vbo = GL33C.glGenBuffers();

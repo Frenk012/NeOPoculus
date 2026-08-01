@@ -57,6 +57,8 @@ public final class VoxelRenderer {
 	// Diagnostics surfaced on the F3 line.
 	private volatile int drawnLastFrame;
 	private volatile long totalUploaded;
+	/** Bounds the went-dark diagnostic to a few lines per session. */
+	private int darkLogged;
 
 	public int drawnLastFrame() {
 		return drawnLastFrame;
@@ -119,6 +121,7 @@ public final class VoxelRenderer {
 			VoxelRegionMesh mesh = new VoxelRegionMesh(data);
 			VoxelRegionMesh old = meshes.put(key, mesh);
 			if (old != null) {
+				logIfWentDark(key, old, mesh);
 				old.delete();
 			}
 			if (mesh.usedFallback) {
@@ -136,6 +139,27 @@ public final class VoxelRenderer {
 			totalUploaded++;
 			inFlight.remove(key);
 			data.free();
+		}
+	}
+
+	/**
+	 * Diagnostic for the LOD-goes-black bug: logs when a re-mesh turns a mostly
+	 * lit region mostly dark (or back), with both levels, so the log says whether
+	 * the darkening coincides with a level demotion, a disk fault or a plain
+	 * re-mesh at the same level. Bounded to a handful of lines per session.
+	 */
+	private void logIfWentDark(long key, VoxelRegionMesh old, VoxelRegionMesh now) {
+		if (darkLogged >= 40 || old.quads == 0 || now.quads == 0) {
+			return;
+		}
+		float before = old.darkQuads / (float) old.quads;
+		float after = now.darkQuads / (float) now.quads;
+		if (after > 0.5f && before <= 0.5f) {
+			darkLogged++;
+			Iris.logger.warn(String.format(
+				"Horizon: voxel region %d,%d went DARK on re-mesh: L%d->L%d, dark %.0f%%->%.0f%% (%d->%d quads)",
+				VoxelRegionKey.rx(key), VoxelRegionKey.rz(key), old.level, now.level,
+				before * 100f, after * 100f, old.quads, now.quads));
 		}
 	}
 

@@ -34,7 +34,7 @@ public final class VoxelMesher {
 	 * cannot be stranded flat by an epoch edge consumed before it was uploaded.
 	 */
 	public record MeshData(long regionKey, int level, ByteBuffer vertexData, int quads, float minY, float maxY,
-						   boolean usedFallback, int bakeEpoch) {
+						   boolean usedFallback, int bakeEpoch, int darkQuads) {
 		public void free() {
 			MemoryUtil.memFree(vertexData);
 		}
@@ -54,6 +54,10 @@ public final class VoxelMesher {
 
 		ByteBuffer buf = MemoryUtil.memAlloc(1 << 21); // 2 MB, grows on demand
 		int quads = 0;
+		// Diagnostic: quads whose face light is fully dark (sky 0 AND block 0). A
+		// region flipping from mostly-lit to mostly-dark across a re-mesh is the
+		// signature of the LOD-goes-black bug; VoxelRenderer logs that transition.
+		int darkQuads = 0;
 		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
 		boolean capped = false;
 		boolean[] usedFallback = {false};
@@ -123,7 +127,11 @@ public final class VoxelMesher {
 											bakery.requestBake(state, biome);
 											usedFallback[0] = true;
 										}
-										float[] yspan = emitQuad(buf, colors, key, faceLight[v * N + u], slot,
+										int lightMeta = faceLight[v * N + u];
+										if (lightMeta == 0) {
+											darkQuads++;
+										}
+										float[] yspan = emitQuad(buf, colors, key, lightMeta, slot,
 											face, w, u, v, su, sv, sxLocal, szLocal, sy, cellSize);
 										minY = Math.min(minY, yspan[0]);
 										maxY = Math.max(maxY, yspan[1]);
@@ -158,7 +166,7 @@ public final class VoxelMesher {
 		}
 		buf.limit(buf.position());
 		buf.position(0);
-		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0], startEpoch);
+		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0], startEpoch, darkQuads);
 	}
 
 	private static ByteBuffer maybeGrow(ByteBuffer buf) {

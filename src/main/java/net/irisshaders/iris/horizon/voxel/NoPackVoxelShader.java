@@ -25,7 +25,10 @@ public final class NoPackVoxelShader {
 		flat out uint vLight;
 		flat out uint vSlot;
 		void main() {
-			vLocalPos = vec3(aPosLight.xyz);   // region-local blocks, y biased
+			// Positions arrive in 1/16-block sub-units (partial shapes need the
+			// precision); convert back to blocks first so everything downstream —
+			// u_offset, the chunk mask, the per-cell fract UVs — stays in blocks.
+			vLocalPos = vec3(aPosLight.xyz) * (1.0 / 16.0);   // region-local blocks, y biased
 			vec3 rel = vLocalPos + u_offset;
 			vRelPos = rel;
 			vColor = aColor;

@@ -19,7 +19,18 @@ public final class LodVertexFormatV2 {
 
 	public static final int STRIDE = VoxelConstants.VERTEX_STRIDE; // 24
 
-	public static final int POS_OFFSET = 0;        // 3 × u16 (region-local x, worldY+Y_BIAS, z)
+	/**
+	 * Positions are stored in 1/16-block sub-units, not whole blocks: a vertex
+	 * may sit at any sixteenth of a cell, which is what lets a slab be half a
+	 * block high or a fence a thin post. The layout is unchanged (still 3 × u16
+	 * at offset 0), only the scale — the vertex shader divides by
+	 * {@link #POS_UNITS_PER_BLOCK} before anything else, so every downstream
+	 * consumer keeps working in blocks. Worst case is a region-local 2048 blocks
+	 * → 32768 sub-units, which is within u16 range as an unsigned bit pattern.
+	 */
+	public static final int POS_UNITS_PER_BLOCK = 16;
+
+	public static final int POS_OFFSET = 0;        // 3 × u16 ((region-local x, worldY+Y_BIAS, z) × 16)
 	public static final int LIGHT_OFFSET = 6;      // u16 light meta (sky 0-3, block 4-7)
 	public static final int COLOR_OFFSET = 8;      // 4 × u8 RGBA
 	public static final int MATERIAL_OFFSET = 12;  // u8 DH material id
@@ -31,8 +42,10 @@ public final class LodVertexFormatV2 {
 	public static final int FLAGS_OFFSET = 21;     // u8
 
 	/**
-	 * Writes one vertex at the buffer's current position. Region-local X/Z in
-	 * blocks (0..2048), {@code posYBiased} = worldY + {@link VoxelConstants#Y_BIAS}.
+	 * Writes one vertex at the buffer's current position. Coordinates are in
+	 * 1/16-block sub-units (see {@link #POS_UNITS_PER_BLOCK}): region-local X/Z
+	 * in 0..32768, {@code posYBiased} = (worldY + {@link VoxelConstants#Y_BIAS})
+	 * × 16.
 	 */
 	public static void writeVertex(ByteBuffer buf, int rlx, int posYBiased, int rlz,
 								   int lightMeta, int rgb, int material, int normalIdx,

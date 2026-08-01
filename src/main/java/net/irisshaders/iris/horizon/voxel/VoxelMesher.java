@@ -286,6 +286,7 @@ public final class VoxelMesher {
 		int baseZ = szLocal * N;
 		int baseWorldYCells = sy * N;
 		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+		final int U = LodVertexFormatV2.POS_UNITS_PER_BLOCK;
 		for (int i = 0; i < 4; i++) {
 			int rlx = (baseX + cx[i]) * cellSize;
 			int rlz = (baseZ + cz[i]) * cellSize;
@@ -293,7 +294,10 @@ public final class VoxelMesher {
 			int posY = worldY + VoxelConstants.Y_BIAS;
 			minY = Math.min(minY, worldY);
 			maxY = Math.max(maxY, worldY);
-			LodVertexFormatV2.writeVertex(buf, rlx, posY, rlz, lightMeta, rgb,
+			// Positions go out in 1/16-block sub-units so partial-height shapes
+			// (slabs, snow, carpets) can be expressed; Y_BIAS is a multiple of 16
+			// so the shader's fract-based per-cell UVs are unaffected.
+			LodVertexFormatV2.writeVertex(buf, rlx * U, posY * U, rlz * U, lightMeta, rgb,
 				0 /*material*/, face, atlasSlot, biome, face /*faceMeta*/, 0 /*flags*/);
 		}
 		return new float[]{minY, maxY};

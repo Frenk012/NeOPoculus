@@ -152,6 +152,21 @@ public final class VoxelMesher {
 								break;
 							}
 						}
+						// Partial-shape cells sat out the greedy merge above; emit
+						// their real boxes now.
+						int[] counters = {quads, darkQuads, 0};
+						float[] span = {minY, maxY};
+						buf = emitShapedCells(buf, snap, palettes, colors, metadata, bakery,
+							sxLocal, szLocal, sy, cellSize, counters, span, usedFallback);
+						quads = counters[0];
+						darkQuads = counters[1];
+						if (counters[2] != 0) {
+							capped = true;
+							Iris.logger.warn("Horizon: voxel region " + rx + "," + rz
+								+ " L" + level + " hit the quad cap in shaped cells; truncated");
+						}
+						minY = span[0];
+						maxY = span[1];
 					}
 				}
 			}
@@ -167,6 +182,158 @@ public final class VoxelMesher {
 		buf.limit(buf.position());
 		buf.position(0);
 		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0], startEpoch, darkQuads);
+	}
+
+	/** Per face (DH order -Y,+Y,-Z,+Z,-X,+X): the axis it is perpendicular to, 0=X 1=Y 2=Z. */
+	private static final int[] FACE_AXIS = {1, 1, 2, 2, 0, 0};
+	private static final int[] FACE_DX = {0, 0, 0, 0, -1, 1};
+	private static final int[] FACE_DY = {-1, 1, 0, 0, 0, 0};
+	private static final int[] FACE_DZ = {0, 0, -1, 1, 0, 0};
+
+	/**
+	 * Emits the real geometry of every cell in this section whose block does not
+	 * fill its cell — slabs at half height, snow layers and carpets flat on the
+	 * ground, fences and panes as thin posts. These cells are excluded from the
+	 * greedy merge (their faces are not full-cell plates), so each one emits its
+	 * own box here.
+	 *
+	 * <p>The box is expressed in sixteenths of the CELL, not of a block, so it
+	 * scales with the LOD level: a slab roof stays proportionally half-height at
+	 * L1..L4 instead of snapping back to a full cube. A face lying exactly on the
+	 * cell boundary is culled against its neighbour exactly like a cube face
+	 * (a slab's flush side against stone stays hidden) and takes that neighbour's
+	 * light; an inset face is always visible and takes its own cell's light,
+	 * which is the light the block itself sits in.
+	 *
+	 * @param counters {quads, darkQuads, cappedFlag}, updated in place
+	 * @param span     {minY, maxY} in world blocks, updated in place
+	 * @return the vertex buffer, which may have been grown
+	 */
+	private static ByteBuffer emitShapedCells(ByteBuffer buf, SectionSnapshot snap, VoxelPalettes palettes,
+											  VoxelColorTable colors,
+											  net.irisshaders.iris.horizon.voxel.model.StateMetadataTable metadata,
+											  net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery,
+											  int sxLocal, int szLocal, int sy, int cellSize,
+											  int[] counters, float[] span, boolean[] usedFallback) {
+		final int U = LodVertexFormatV2.POS_UNITS_PER_BLOCK;
+		int baseX = sxLocal * N;
+		int baseZ = szLocal * N;
+		int baseWorldYCells = sy * N;
+		// Hoisted scratch: this runs per cell per face, so nothing may allocate.
+		int[] lo = new int[3];
+		int[] hi = new int[3];
+		int[] su0 = new int[3];
+		int[] su1 = new int[3];
+		int[] vx = new int[4], vy = new int[4], vz = new int[4];
+
+		for (int y = 0; y < N; y++) {
+			for (int z = 0; z < N; z++) {
+				for (int x = 0; x < N; x++) {
+					long c = snap.cell(x, y, z);
+					if (VoxelCell.isAir(c)) {
+						continue;
+					}
+					int state = VoxelCell.stateId(c);
+					int shape = palettes.shapeOf(state);
+					if (VoxelShapeClass.classOf(shape) != VoxelShapeClass.BOX) {
+						continue; // full cubes went through the greedy path; DROP renders as nothing
+					}
+					for (int a = 0; a < 3; a++) {
+						lo[a] = VoxelShapeClass.min(shape, a);
+						hi[a] = VoxelShapeClass.max(shape, a);
+					}
+					int biome = VoxelCell.biomeId(c);
+					int rgb = colors.colorOf(state);
+
+					for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
+						int axis = FACE_AXIS[face];
+						boolean negative = (face & 1) == 0;
+						int plane = negative ? lo[axis] : hi[axis];
+						boolean onBoundary = negative ? plane == 0 : plane == 16;
+						int lightMeta;
+						if (onBoundary) {
+							long n = snap.cell(x + FACE_DX[face], y + FACE_DY[face], z + FACE_DZ[face]);
+							if (!visible(palettes, c, n)) {
+								continue;
+							}
+							int bl = VoxelCell.blockLight(n);
+							int sl = VoxelCell.skyLight(n);
+							if (!snap.neighborPresent(face) && outsideCore(x, y, z, face)) {
+								sl = 15;
+							}
+							lightMeta = (bl << 4) | sl;
+						} else {
+							lightMeta = (VoxelCell.blockLight(c) << 4) | VoxelCell.skyLight(c);
+						}
+						int slot = metadata.slotOf(state, biome, face);
+						if (slot == 0 && !metadata.isBaked(state, biome)) {
+							bakery.requestBake(state, biome);
+							usedFallback[0] = true;
+						}
+						if (buf.position() + 4 * LodVertexFormatV2.STRIDE > buf.capacity()) {
+							ByteBuffer grown = maybeGrow(buf);
+							if (grown == null) {
+								counters[2] = 1;
+								return buf;
+							}
+							buf = grown;
+						}
+						// Corner sub-unit coordinates: the face is a rectangle
+						// spanning the box on the two axes it does not face.
+						for (int a = 0; a < 3; a++) {
+							su0[a] = lo[a];
+							su1[a] = hi[a];
+						}
+						su0[axis] = plane;
+						su1[axis] = plane;
+						int x0 = ((baseX + x) * 16 + su0[0]) * cellSize;
+						int x1 = ((baseX + x) * 16 + su1[0]) * cellSize;
+						int z0 = ((baseZ + z) * 16 + su0[2]) * cellSize;
+						int z1 = ((baseZ + z) * 16 + su1[2]) * cellSize;
+						int yBase = (baseWorldYCells + y) * 16 * cellSize + VoxelConstants.Y_BIAS * U;
+						int y0 = yBase + su0[1] * cellSize;
+						int y1 = yBase + su1[1] * cellSize;
+
+						switch (axis) {
+							case 1 -> { // perpendicular to Y: rectangle in X/Z
+								vx[0] = x0; vx[1] = x1; vx[2] = x1; vx[3] = x0;
+								vz[0] = z0; vz[1] = z0; vz[2] = z1; vz[3] = z1;
+								vy[0] = vy[1] = vy[2] = vy[3] = y0;
+							}
+							case 2 -> { // perpendicular to Z: rectangle in X/Y
+								vx[0] = x0; vx[1] = x1; vx[2] = x1; vx[3] = x0;
+								vy[0] = y0; vy[1] = y0; vy[2] = y1; vy[3] = y1;
+								vz[0] = vz[1] = vz[2] = vz[3] = z0;
+							}
+							default -> { // perpendicular to X: rectangle in Z/Y
+								vz[0] = z0; vz[1] = z1; vz[2] = z1; vz[3] = z0;
+								vy[0] = y0; vy[1] = y0; vy[2] = y1; vy[3] = y1;
+								vx[0] = vx[1] = vx[2] = vx[3] = x0;
+							}
+						}
+						for (int i = 0; i < 4; i++) {
+							LodVertexFormatV2.writeVertex(buf, vx[i], vy[i], vz[i], lightMeta, rgb,
+								0, face, slot, biome, face, 0);
+						}
+						float worldY0 = (vy[0] - VoxelConstants.Y_BIAS * U) / (float) U;
+						float worldY1 = (vy[2] - VoxelConstants.Y_BIAS * U) / (float) U;
+						span[0] = Math.min(span[0], Math.min(worldY0, worldY1));
+						span[1] = Math.max(span[1], Math.max(worldY0, worldY1));
+						counters[0]++;
+						if (lightMeta == 0) {
+							counters[1]++;
+						}
+					}
+				}
+			}
+		}
+		return buf;
+	}
+
+	/** Whether stepping one cell along {@code face} from (x,y,z) leaves the 32³ core. */
+	private static boolean outsideCore(int x, int y, int z, int face) {
+		int nx = x + FACE_DX[face], ny = y + FACE_DY[face], nz = z + FACE_DZ[face];
+		return nx < 0 || nx >= N || ny < 0 || ny >= N || nz < 0 || nz >= N;
 	}
 
 	private static ByteBuffer maybeGrow(ByteBuffer buf) {
@@ -198,6 +365,14 @@ public final class VoxelMesher {
 			for (int u = 0; u < N; u++) {
 				long c = readFace(snap, face, w, u, v);
 				if (VoxelCell.isAir(c)) {
+					faceKey[v * N + u] = 0;
+					continue;
+				}
+				// Cells that do not fill their cell are not flat plates and cannot
+				// take part in the greedy merge; emitShapedCells handles them with
+				// their real box or cross geometry.
+				if (VoxelShapeClass.classOf(palettes.shapeOf(VoxelCell.stateId(c)))
+					!= VoxelShapeClass.FULL_CUBE) {
 					faceKey[v * N + u] = 0;
 					continue;
 				}

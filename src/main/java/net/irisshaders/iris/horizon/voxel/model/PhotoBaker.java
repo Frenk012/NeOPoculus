@@ -91,6 +91,14 @@ public final class PhotoBaker {
 			}
 		}
 		if (quads.isEmpty()) {
+			// Cross models (grass, flowers, saplings) carry diagonal quads whose
+			// direction matches no cube face, so a per-direction filter finds
+			// nothing. Take every quad instead: the sprite is what the cross
+			// silhouette is drawn from, and the atlas dedups the six identical
+			// results into one slot.
+			quads.addAll(model.getQuads(state, null, RANDOM));
+		}
+		if (quads.isEmpty()) {
 			return null;
 		}
 		int[] acc = new int[16 * 16]; // 0 = transparent

@@ -60,7 +60,9 @@ public final class NoPackVoxelShader {
 		uniform float u_slotsPerRow;
 		uniform float u_slotScale;
 		out vec4 fragColor;
-		const float faceShade[6] = float[6](0.5, 1.0, 0.8, 0.8, 0.6, 0.6);
+		// Six cube faces plus the two cross-plant diagonals, which vanilla draws
+		// unshaded so a grass tuft does not read darker than the ground it sits on.
+		const float faceShade[8] = float[8](0.5, 1.0, 0.8, 0.8, 0.6, 0.6, 1.0, 1.0);
 		void main() {
 			// Cut the LOD wherever a real chunk is loaded (per-chunk coverage
 			// mask, dithered for a soft chunk-aligned boundary). This is what
@@ -88,8 +90,13 @@ public final class NoPackVoxelShader {
 					plane = vLocalPos.xz;        // +/-Y top/bottom
 				} else if (vFace < 4u) {
 					plane = vLocalPos.xy;        // +/-Z
-				} else {
+				} else if (vFace < 6u) {
 					plane = vLocalPos.zy;        // +/-X
+				} else {
+					// Cross-plant diagonal: x is monotonic along both diagonals,
+					// so the sprite maps once across the cell exactly as a side
+					// face does. The alpha cutout below carves the silhouette.
+					plane = vLocalPos.xy;
 				}
 				vec2 cellUV = plane / u_cellSize;
 				vec2 local = fract(cellUV);

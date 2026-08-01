@@ -235,7 +235,23 @@ public final class VoxelMesher {
 					}
 					int state = VoxelCell.stateId(c);
 					int shape = palettes.shapeOf(state);
-					if (VoxelShapeClass.classOf(shape) != VoxelShapeClass.BOX) {
+					int shapeClass = VoxelShapeClass.classOf(shape);
+					if (shapeClass == VoxelShapeClass.CROSS) {
+						// Cross plants only at L0: one cell is one block there, so
+						// the silhouette reads correctly. At coarser levels a cell
+						// spans several blocks and a cell-sized cross would be a
+						// giant billboard, so grass simply drops out with distance.
+						if (cellSize == 1) {
+							buf = emitCross(buf, snap, colors, metadata, bakery, c, state,
+								x, y, z, baseX, baseZ, baseWorldYCells, cellSize,
+								counters, span, usedFallback);
+							if (counters[2] != 0) {
+								return buf;
+							}
+						}
+						continue;
+					}
+					if (shapeClass != VoxelShapeClass.BOX) {
 						continue; // full cubes went through the greedy path; DROP renders as nothing
 					}
 					for (int a = 0; a < 3; a++) {
@@ -327,6 +343,65 @@ public final class VoxelMesher {
 				}
 			}
 		}
+		return buf;
+	}
+
+	/**
+	 * Emits a cross-model plant (grass, flowers, crops, saplings) as the two
+	 * diagonal quads vanilla draws, so the alpha cutout in the fragment shader
+	 * carves the real silhouette instead of painting a cube. Two quads are enough
+	 * because the voxel pass draws two-sided. Both quads take the plant's own
+	 * cell light and its side photo; the {@code faceMeta} values 6 and 7 tell the
+	 * shader to use the diagonal plane mapping and skip directional shading.
+	 */
+	private static ByteBuffer emitCross(ByteBuffer buf, SectionSnapshot snap, VoxelColorTable colors,
+										net.irisshaders.iris.horizon.voxel.model.StateMetadataTable metadata,
+										net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery,
+										long cell, int state, int x, int y, int z,
+										int baseX, int baseZ, int baseWorldYCells, int cellSize,
+										int[] counters, float[] span, boolean[] usedFallback) {
+		final int U = LodVertexFormatV2.POS_UNITS_PER_BLOCK;
+		int biome = VoxelCell.biomeId(cell);
+		int rgb = colors.colorOf(state);
+		int lightMeta = (VoxelCell.blockLight(cell) << 4) | VoxelCell.skyLight(cell);
+		int slot = metadata.slotOf(state, biome, VoxelConstants.FACE_NEG_Z);
+		if (slot == 0 && !metadata.isBaked(state, biome)) {
+			bakery.requestBake(state, biome);
+			usedFallback[0] = true;
+		}
+		int x0 = (baseX + x) * 16 * cellSize;
+		int x1 = x0 + 16 * cellSize;
+		int z0 = (baseZ + z) * 16 * cellSize;
+		int z1 = z0 + 16 * cellSize;
+		int y0 = (baseWorldYCells + y) * 16 * cellSize + VoxelConstants.Y_BIAS * U;
+		int y1 = y0 + 16 * cellSize;
+
+		for (int diagonal = 0; diagonal < 2; diagonal++) {
+			if (buf.position() + 4 * LodVertexFormatV2.STRIDE > buf.capacity()) {
+				ByteBuffer grown = maybeGrow(buf);
+				if (grown == null) {
+					counters[2] = 1;
+					return buf;
+				}
+				buf = grown;
+			}
+			// Diagonal 0 runs z0->z1 with x, diagonal 1 runs z1->z0.
+			int za = diagonal == 0 ? z0 : z1;
+			int zb = diagonal == 0 ? z1 : z0;
+			int faceMeta = 6 + diagonal;
+			LodVertexFormatV2.writeVertex(buf, x0, y0, za, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
+			LodVertexFormatV2.writeVertex(buf, x1, y0, zb, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
+			LodVertexFormatV2.writeVertex(buf, x1, y1, zb, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
+			LodVertexFormatV2.writeVertex(buf, x0, y1, za, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
+			counters[0]++;
+			if (lightMeta == 0) {
+				counters[1]++;
+			}
+		}
+		float worldY0 = (y0 - VoxelConstants.Y_BIAS * U) / (float) U;
+		float worldY1 = (y1 - VoxelConstants.Y_BIAS * U) / (float) U;
+		span[0] = Math.min(span[0], worldY0);
+		span[1] = Math.max(span[1], worldY1);
 		return buf;
 	}
 

@@ -114,6 +114,8 @@ public final class VoxelPalettes {
 	private volatile BlockState[] statesById;
 	private volatile byte[] opacityById;
 	private volatile boolean[] leafById;
+	/** Packed {@link VoxelShapeClass} per state: how the block occupies its cell. */
+	private volatile int[] shapeById;
 	/** Fixed 512 entries: MAX_BIOME_IDS is small enough to never grow. */
 	private volatile ResourceLocation[] biomesById;
 
@@ -141,10 +143,12 @@ public final class VoxelPalettes {
 		statesById = new BlockState[INITIAL_STATE_CAPACITY];
 		opacityById = new byte[INITIAL_STATE_CAPACITY];
 		leafById = new boolean[INITIAL_STATE_CAPACITY];
+		shapeById = new int[INITIAL_STATE_CAPACITY];
 		biomesById = new ResourceLocation[VoxelConstants.MAX_BIOME_IDS];
 
 		statesById[0] = Blocks.AIR.defaultBlockState();
 		opacityById[0] = 0;
+		shapeById[0] = VoxelShapeClass.DEFAULT;
 		nextStateId.set(1);
 
 		biomesById[0] = Biomes.PLAINS.location();
@@ -198,7 +202,9 @@ public final class VoxelPalettes {
 			statesById[id] = state;
 			boolean leaf = safeIsLeafLike(state);
 			leafById[id] = leaf;
-			opacityById[id] = computeOpacity(state, leaf);
+			int shape = VoxelShapeClass.classify(state);
+			shapeById[id] = shape;
+			opacityById[id] = computeOpacity(state, leaf, shape);
 			// Slot filled before the id is published anywhere: the map put
 			// (and the caller storing the id into a section under its
 			// monitor) supplies the happens-before for lock-free readers.
@@ -294,6 +300,19 @@ public final class VoxelPalettes {
 			return opacity[stateId];
 		}
 		return opacity[FALLBACK_STATE_ID];
+	}
+
+	/**
+	 * Packed {@link VoxelShapeClass} for a state id: how the block fills its
+	 * cell. Any thread; an id past the array (a torn read during growth) falls
+	 * back to a full cube, which is the pre-shapes behaviour.
+	 */
+	public int shapeOf(int stateId) {
+		int[] shape = shapeById;
+		if (stateId >= 0 && stateId < shape.length) {
+			return shape[stateId];
+		}
+		return VoxelShapeClass.DEFAULT;
 	}
 
 	/** Cached {@link LeafLikePredicate} result for a state id. */
@@ -422,7 +441,12 @@ public final class VoxelPalettes {
 				statesById[id] = state;
 				boolean leaf = safeIsLeafLike(state);
 				leafById[id] = leaf;
-				opacityById[id] = computeOpacity(state, leaf);
+				// Shape is recomputed on load exactly like opacity: it is derived
+				// from the live BlockState, never persisted, so a loaded palette
+				// can never carry a stale class after a resource/mod change.
+				int shape = VoxelShapeClass.classify(state);
+				shapeById[id] = shape;
+				opacityById[id] = computeOpacity(state, leaf, shape);
 				stateToId.put(state, id);
 			}
 		}
@@ -675,14 +699,17 @@ public final class VoxelPalettes {
 		BlockState[] states = new BlockState[newLength];
 		byte[] opacity = new byte[newLength];
 		boolean[] leaf = new boolean[newLength];
+		int[] shape = new int[newLength];
 		System.arraycopy(statesById, 0, states, 0, statesById.length);
 		System.arraycopy(opacityById, 0, opacity, 0, opacityById.length);
 		System.arraycopy(leafById, 0, leaf, 0, leafById.length);
+		System.arraycopy(shapeById, 0, shape, 0, shapeById.length);
 		// Republish fully-copied arrays; readers hold either the old or the
 		// new reference, both consistent for every already-issued id.
 		statesById = states;
 		opacityById = opacity;
 		leafById = leaf;
+		shapeById = shape;
 	}
 
 	/**
@@ -691,8 +718,16 @@ public final class VoxelPalettes {
 	 * because modded overrides may throw off-thread — then occluders count
 	 * as 15 and everything else as barely-there 1.
 	 */
-	private static byte computeOpacity(BlockState state, boolean leafLike) {
+	private static byte computeOpacity(BlockState state, boolean leafLike, int shape) {
 		if (state.isAir()) {
+			return 0;
+		}
+		// A state that does not fill its cell must never occlude: opacity 15 would
+		// cull the face of whatever is behind a fence or beside a slab, would let
+		// a lone fence post outrank solid rock in VoxelMipper.selectRepresentative
+		// (ballooning into a 16-block cube at L4), and would exclude the cell from
+		// the mip light average. All three read this same byte.
+		if (VoxelShapeClass.classOf(shape) != VoxelShapeClass.FULL_CUBE) {
 			return 0;
 		}
 		if (leafLike) {

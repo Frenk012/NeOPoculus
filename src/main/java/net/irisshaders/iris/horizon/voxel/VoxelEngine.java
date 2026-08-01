@@ -537,18 +537,14 @@ public final class VoxelEngine {
 		if (!chunk.getLevel().dimensionType().hasSkyLight()) {
 			return true; // Nether/End have no skylight to wait for; never stall them
 		}
-		// Only trust light in the INTERIOR of the loaded area. Unloading a chunk
-		// makes the client mark all its sections empty
-		// (ClientPacketListener.queueLightRemoval -> updateSectionStatus(pos, true)),
-		// which re-propagates sky light into the still-loaded neighbours. Those
-		// queued updates drain in bulk once the player stops moving, so a chunk on
-		// the border is regularly mid-recalculation — capturing it then freezes
-		// transient darkness into the LOD forever. An edge chunk simply waits; it
-		// becomes interior as the player approaches, and its unload capture is
-		// still the last-chance path if they never do.
-		if (!neighborsLoaded(chunk)) {
-			return false;
-		}
+		// NOTE: an earlier version also required all four cardinal neighbours to be
+		// loaded, on the theory that a border chunk's light is mid-repropagation.
+		// That was speculation, and it starved the engine: freshly loaded chunks
+		// are ALWAYS on the border, so exactly the chunks new LOD comes from were
+		// deferred every time and terrain generated only in patches. The
+		// blackening it was meant to prevent turned out to be the light-trust bug
+		// fixed in VoxelEngine.drainCaptures. If border light ever proves to be a
+		// real problem, it needs evidence and a narrower remedy than this.
 		int highest = chunk.getHighestFilledSectionIndex();
 		if (highest < 0) {
 			return true; // all-air column: nothing to shade, don't stall it
@@ -563,13 +559,12 @@ public final class VoxelEngine {
 		if (!lightEngine.lightOnInSection(pos)) {
 			return false;
 		}
-		DataLayer sky = lightEngine.getLayerListener(LightLayer.SKY).getDataLayerData(pos);
-		if (sky == null) {
-			return false;
-		}
-		// The surface section of a lit column is never uniformly dark; if it is,
-		// the data is a placeholder and the real light has not arrived.
-		return !sky.isDefinitelyFilledWith(0);
+		// A present layer plus the engine's own "light is on here" flag is the
+		// signal. Deliberately NOT also rejecting an all-zero layer: a highest
+		// filled section that happens to be solid all the way up (mountainsides,
+		// deep terrain) is legitimately dark, and rejecting it deferred those
+		// chunks forever.
+		return lightEngine.getLayerListener(LightLayer.SKY).getDataLayerData(pos) != null;
 	}
 
 	/** Whether this chunk position is still resident (a deferred capture of an unloaded chunk must not linger). */

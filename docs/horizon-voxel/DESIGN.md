@@ -130,6 +130,7 @@ All A/B/C constants stand as specified, with these integration edits: `STORAGE_R
 | **M3** | Mesh + minimal render, flat color only: `SectionSnapshot`, `VoxelMesher`, `LodVertexFormatV2`, `SharedQuadIndexBuffer`, `VoxelRegionMesh`, `VoxelLodSelector`, `VoxelRenderer` no-pack pass using vertex color (MapColor-provisional path), coverage mask reuse | + mesh/render classes, `HorizonLod` scheduler | **Voxel terrain visible** past render distance at all 5 levels, MapColor-flat, seams closed (missing-neighbor walls), collar coverage correct, culling on | L |
 | **M4** | Bakery + textured path: whole `voxel.model` pkg, 2D atlas + mask, `StateMetadataTable`, `onStateReady` remesh, shader textured branch + `BiomeTintLut`, resource-reload epoch | model pkg, `NoPackVoxelShader`, `Iris.java` reload hook | Real block textures on LOD terrain; grass/leaves biome-tinted; furnace front un-mirrored; F3+T rebakes cleanly | L |
 | **M5** | Translucency + fluids + light: translucent ranges, back-to-front region sort, still-sprite fluid bakes, neighbor-light faceKeys, emissive metadata, leaf-darkened mips visible | mesher/renderer/bakery touches | Oceans render as translucent water at distance; caves/overhangs dark; glowstone bright at night | M |
+| **M5b** | **Server-side LOD generation + distribution** (see §10): dedicated-server LOD builder driven by commands (region / radius / whole-world / autonomous background pass), server-side `.hlod` store, join handshake + chunked transfer over a plugin channel, client auto-download into the local store, client + server options and permissions | new `horizon.net` + `horizon.server` pkgs, `VoxelStore` reuse, config screens | Join a server that has pre-generated LOD → the whole generated area renders immediately, with zero exploration; `/horizon lod generate` progresses without stalling the server tick | XL |
 | **M6** | Shaderpack Phase-1: iris path on `VoxelRegionMesh` (irisVao), `DhMaterials` into irisExtra, real per-face normals + captured light, `faceAvgColor` flat color; `dh_water` fallback | `VoxelRenderer.renderIris`, `DhMaterials` | DH-aware packs shade/fog LOD correctly, water gets water material, cave LOD lit right | M |
 | **M7** | Parity + hardening: hysteresis, VRAM clamp, per-level evict radii, block-edit→remip→remesh latency tuning, upload budgets, warn/log discipline, acceptance tests | tuning across pkg | Mining a block updates distant LOD within ~1 s; elytra flight hitch-free; budgets hold at 4096 m | M |
 | **Post-parity (Phase 2)** | Shader injection: `patchHorizonTerrain` variant injecting atlas/LUT samplers + §2.1 UV derivation into patched `dh_terrain`, attribs 3/4 enabled, `HORIZON_TEXTURED` macro | `TransformPatcher`, `HorizonIrisProgram`, `StandardMacros` | Textured LOD under shaderpacks | L |
@@ -151,3 +152,78 @@ All A/B/C constants stand as specified, with these integration edits: `STORAGE_R
 2. **Classic engine end-state**: deprecate and remove after one stable release with voxel as default.
 3. **Disk footprint**: in scope - per-dimension cache-size cap (LRU by region-file mtime) + "Clear LOD cache" button in the Horizon GUI, scheduled as milestone M2b.
 4. **Max distance**: 4096 m default / ~16 km practical ceiling accepted for parity; far-field decimation beyond L4 is a post-parity track.
+## 10. M5b — Server-side LOD generation & distribution
+
+**Goal.** A server (dedicated or integrated) can build the voxel LOD itself, ahead of
+time, without any player exploring; a joining client is told what exists and pulls it
+down automatically, so the world renders out to `lodDistance` from the first frame.
+
+**Why here (between M5 and M6).** It needs the cell format, persistence and mip rules
+frozen (M1-M3), and the light/fluid semantics settled (M5), because whatever the server
+bakes into cells is what every client renders forever. It does not need the shaderpack
+path (M6) — the transferred payload is cells, not meshes, so shader work stays orthogonal.
+
+### 10.1 Server side
+
+- **`horizon.server.LodGenerator`** — walks a work list of chunk columns, obtains each
+  through the server chunk source, converts it with the existing `ChunkSnapshotter` →
+  `ChunkPyramid` → `VoxelIngest` path (server-thread snapshot, worker conversion, same as
+  the client), writes into a server-side `VoxelStore`. Generation is **budgeted per tick**
+  (`horizon.server.msPerTick`, default 10 ms) and pauses under load, so a running server
+  never stalls; progress and ETA are logged and queryable.
+- **Chunk sourcing modes**: *existing-only* (never generate new terrain — read saved
+  region files only) and *generate-missing* (force world generation for absent chunks,
+  the expensive mode). Default existing-only.
+- **Commands** (`/horizon lod ...`, permission level 2, `horizon.command.lod`):
+  - `generate radius <blocks> [around <x> <z>|<player>]` — a disc around a point.
+  - `generate region <x1> <z1> <x2> <z2>` — an explicit rectangle.
+  - `generate world` — everything already saved on disk.
+  - `generate auto [on|off]` — background pass that keeps LOD current: follows online
+    players and re-ingests chunks whose blocks changed, at a low budget.
+  - `status` / `pause` / `resume` / `cancel` — progress, control.
+  - `purge [region ...]` — drop generated LOD.
+- **Storage**: the same `.hlod` v4 region files + `palette.nbt`, under
+  `<world>/horizon-lod/<dimension>/`, so client and server code share one codec. The
+  server keeps a per-dimension **manifest** (region key → content hash + mtime) that
+  drives both the join handshake and incremental re-sync.
+
+### 10.2 Transfer protocol
+
+A NeoForge payload channel `neopoculus:horizon_lod`, versioned, all packets bounded and
+rate-limited. Clients that lack the mod (or disable the feature) never see traffic.
+
+1. `S→C HELLO` — protocol version, dimension list, `lodDistance` the server offers,
+   total region count/bytes, whether generation is still running.
+2. `C→S SUBSCRIBE` — client's accepted version + its **manifest digest** (region keys it
+   already holds with their hashes), so only genuinely missing/stale regions transfer.
+3. `S→C REGION_DATA` — one region's codec payload, split into bounded chunks
+   (`horizon.server.maxPacketBytes`, default 32 KB) at a configurable rate
+   (`horizon.server.kbPerSecondPerPlayer`, default 256 KB/s), prioritised **nearest-first**
+   around the player and re-prioritised as they move.
+4. `S→C REGION_INVALIDATE` — a region changed (block edits, new generation pass); the
+   client drops it and re-requests lazily.
+5. `C→S REQUEST` — client asks for specific regions (moving into an area it lacks).
+
+The client writes received payloads straight into its own `VoxelStore` (same codec, no
+re-ingest), marks the covering mesh regions dirty, and the existing scheduler meshes them —
+so **the render path needs no changes at all**. Palette ids are server-authoritative for
+transferred data: the `palette.nbt` is sent first and merged, with unknown ids tombstoning
+to stone exactly as the persistence path already does.
+
+### 10.3 Client side
+
+- Options (Horizon GUI): **Download LOD from server** (on/off), **max download rate**,
+  **disk budget for server-provided LOD** (separate from the locally-captured cache),
+  **prefer server LOD over local capture** for overlapping regions, and a **per-server
+  clear** button. A progress indicator shows "downloading LOD: n/m regions".
+- Trust boundary: server-provided cells are treated as untrusted input — payload sizes,
+  region keys, palette ids and cell counts are all validated before install, and a
+  malformed region is dropped and logged, never crashes the client.
+- Fallback: if the server has no LOD (vanilla or feature off), the client silently keeps
+  its own capture behaviour; both sources coexist per-region.
+
+### 10.4 Testable outcome
+
+On a dedicated server with `/horizon lod generate radius 4096` completed, a fresh client
+joins and sees the full 4 km LOD panorama within seconds of spawning, having explored
+nothing; mining a block updates distant LOD for every online client within ~1 s.

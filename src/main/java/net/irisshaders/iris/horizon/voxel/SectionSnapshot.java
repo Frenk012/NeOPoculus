@@ -38,7 +38,11 @@ public final class SectionSnapshot {
 		if (core == null || core.nonAirCount() == 0) {
 			return false;
 		}
-		java.util.Arrays.fill(cells, VoxelConstants.AIR_CELL);
+		// Pre-fill with the "never captured" marker, not air: whatever the core
+		// copy and the present neighbour planes do not overwrite is a genuinely
+		// absent neighbour, and the mesher must be able to tell that apart from
+		// a captured air cell that is really dark.
+		java.util.Arrays.fill(cells, VoxelConstants.UNCAPTURED_CELL);
 		coreNonAir = core.nonAirCount();
 		if (!fillCore(core)) {
 			return false;
@@ -134,10 +138,10 @@ public final class SectionSnapshot {
 		}
 	}
 
-	/** Cell at core-local coords x,y,z ∈ [-1, 32]; out of that range is AIR. */
+	/** Cell at core-local coords x,y,z ∈ [-1, 32]; out of that range is uncaptured. */
 	public long cell(int x, int y, int z) {
 		if (x < -1 || x > N || y < -1 || y > N || z < -1 || z > N) {
-			return VoxelConstants.AIR_CELL;
+			return VoxelConstants.UNCAPTURED_CELL;
 		}
 		return cells[idx(x, y, z)];
 	}

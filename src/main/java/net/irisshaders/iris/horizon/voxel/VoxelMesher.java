@@ -216,7 +216,7 @@ public final class VoxelMesher {
 				// Light from the adjacent (air/translucent) cell, vanilla-style.
 				int bl = VoxelCell.blockLight(n);
 				int sl = VoxelCell.skyLight(n);
-				if (n == VoxelConstants.AIR_CELL) {
+				if (n == VoxelConstants.UNCAPTURED_CELL) {
 					// Missing-neighbour plane (a not-yet-meshed neighbour region
 					// at the frontier): treat as open sky so the temporary
 					// boundary wall is lit instead of pitch black. Real air with

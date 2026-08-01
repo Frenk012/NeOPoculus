@@ -70,6 +70,17 @@ final class VoxelIngest {
 				// building the pyramid — the common far-sky case.
 				continue;
 			}
+			// An untrusted snapshot (an unload capture, whose light layers the
+			// client already threw away) must never overwrite a section we
+			// already captured with real light: the null-sky fallback would
+			// write sky=0 over correct cells and blacken the chunk for good.
+			// A section that exists nowhere yet is still worth taking — geometry
+			// with imperfect light beats no geometry, and it is the last chance
+			// at this chunk's data.
+			if (!snapshot.lightTrusted() && snapshot.skyLight()[i] == null
+				&& anyResidentTarget(store, cx, sy, cz)) {
+				continue;
+			}
 			pyramid.build(snapshot, i, palettes);
 			boolean airOnly = pyramid.nonAirCount() == 0;
 

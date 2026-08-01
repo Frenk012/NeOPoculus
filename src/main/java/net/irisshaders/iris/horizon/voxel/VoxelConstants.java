@@ -27,6 +27,22 @@ public final class VoxelConstants {
 	// 29-32 block light, 33-36 sky light, 37-63 reserved-zero in v4.
 	/** A fully-zero cell: state id 0 (air), no biome/light. {@link VoxelCell#isAir} matches it. */
 	public static final long AIR_CELL = 0L;
+	/**
+	 * Marker for "this cell was never captured" — a neighbour plane of a section
+	 * that is not resident, which {@link SectionSnapshot} leaves unfilled. It
+	 * lives in the reserved-zero bits so it can never collide with a real cell,
+	 * and reads as air (state bits are 0) for visibility tests.
+	 *
+	 * <p>WHY it exists: the mesher used to detect a missing neighbour by testing
+	 * the whole long against {@link #AIR_CELL}, which silently also matched a
+	 * genuinely captured air cell that happened to carry biome 0 and no light.
+	 * While the biome capture was broken (every quart read as plains) that
+	 * accident force-lit almost every such face; once biomes became real, the
+	 * same faces started reading their true zero light and rendered black.
+	 * A dedicated marker keeps "unknown, assume open sky" and "captured, really
+	 * dark" distinguishable.
+	 */
+	public static final long UNCAPTURED_CELL = 1L << 40;
 	public static final int STATE_BITS = 20;
 	public static final int BIOME_BITS = 9;
 	public static final long STATE_MASK = (1L << STATE_BITS) - 1;

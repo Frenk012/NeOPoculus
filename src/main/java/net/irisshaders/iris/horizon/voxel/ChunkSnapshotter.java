@@ -55,12 +55,23 @@ final class ChunkSnapshotter {
 	 * 3.2): block null reads as 0, sky null reads as 15 above
 	 * {@code highestFilledSectionIndex} and 0 at or below it — unlit sky
 	 * sections are fully sky-lit, unlit buried sections are dark.
+	 *
+	 * <p>{@code lightTrusted} is false for unload captures. {@code
+	 * ClientPacketListener.handleForgetLevelChunk} drops the chunk — which is
+	 * where {@code ChunkEvent.Unload} fires, light still intact — and then
+	 * immediately queues {@code queueSectionData(BLOCK|SKY, pos, null)} for
+	 * every section, so by the time the queued capture actually runs the light
+	 * layers are GONE. Applying the null-sky fallback then writes sky=0 over
+	 * cells that were captured correctly at load time, permanently blackening
+	 * every chunk as it unloads behind the player. {@link VoxelIngest} therefore
+	 * refuses to overwrite an already-captured section from an untrusted
+	 * snapshot.
 	 */
 	record ChunkSnapshot(int chunkX, int chunkZ, int minSectionY, int sectionCount,
 			PalettedContainer<BlockState>[] states,
 			Holder<Biome>[][] biomes,
 			DataLayer[] blockLight, DataLayer[] skyLight,
-			int highestFilledSectionIndex) {
+			int highestFilledSectionIndex, boolean lightTrusted) {
 
 		/** Vanilla section y coordinate for a section index. */
 		int sectionY(int index) {
@@ -82,7 +93,7 @@ final class ChunkSnapshotter {
 	 * Copies one chunk. Client thread only; target well under 1 ms.
 	 */
 	@SuppressWarnings("unchecked")
-	static ChunkSnapshot snapshot(LevelChunk chunk) {
+	static ChunkSnapshot snapshot(LevelChunk chunk, boolean lightTrusted) {
 		int chunkX = chunk.getPos().x;
 		int chunkZ = chunk.getPos().z;
 		int minSectionY = chunk.getMinSection();
@@ -121,7 +132,7 @@ final class ChunkSnapshotter {
 		}
 
 		return new ChunkSnapshot(chunkX, chunkZ, minSectionY, sectionCount,
-			states, biomes, blockLight, skyLight, chunk.getHighestFilledSectionIndex());
+			states, biomes, blockLight, skyLight, chunk.getHighestFilledSectionIndex(), lightTrusted);
 	}
 
 	/**

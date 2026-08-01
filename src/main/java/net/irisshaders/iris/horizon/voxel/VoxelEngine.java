@@ -414,7 +414,10 @@ public final class VoxelEngine {
 
 	private void drainSnapshots(VoxelStore s) {
 		int budget = MAX_SNAPSHOTS_PER_TICK;
-		// Unloads are last-chance: capture regardless of light readiness.
+		// Unloads are last-chance: capture regardless of light readiness, but
+		// flag the snapshot light-untrusted (the client wipes a chunk's light
+		// layers immediately after posting the unload event, so what we read
+		// here is gone, not dark).
 		budget -= drainCaptures(s, unloadQueue, budget, false);
 		// Unloads always got their shot above; loads additionally respect
 		// the in-flight ceiling — the queue itself is the retry set, the
@@ -460,7 +463,7 @@ public final class VoxelEngine {
 				continue;
 			}
 			taken++;
-			captureChunk(s, chunk);
+			captureChunk(s, chunk, requireLight);
 		}
 		if (deferred != null) {
 			queue.addAll(deferred); // retry next tick, once light has propagated
@@ -500,9 +503,9 @@ public final class VoxelEngine {
 	 * convert/pyramid/merge (VoxelIngest). Only the copy runs here —
 	 * PalettedContainer is not safely readable off-thread.
 	 */
-	private void captureChunk(VoxelStore s, LevelChunk chunk) {
+	private void captureChunk(VoxelStore s, LevelChunk chunk, boolean lightTrusted) {
 		try {
-			var snapshot = ChunkSnapshotter.snapshot(chunk);
+			var snapshot = ChunkSnapshotter.snapshot(chunk, lightTrusted);
 			if (snapshot == null) {
 				return; // nothing captureable
 			}

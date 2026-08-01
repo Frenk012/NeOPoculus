@@ -206,20 +206,12 @@ final class VoxelIngest {
 		int bz = baseCell(chunkZ, 0);
 		int skyFallback = aboveHighestFilled ? 15 : 0;
 		int changed = 0;
-		int darkened = 0; // cells this refresh takes from lit to fully dark
 		for (int y = 0; y < 16; y++) {
 			for (int z = 0; z < 16; z++) {
 				for (int x = 0; x < 16; x++) {
 					int bl = block == null ? 0 : block.get(x, y, z);
 					int sl = sky == null ? skyFallback : sky.get(x, y, z);
 					int idx = VoxelSection.cellIndex(bx + x, by + y, bz + z);
-					if (bl == 0 && sl == 0) {
-						long before = section.cellAt(
-							bx + x, by + y, bz + z);
-						if (VoxelCell.skyLight(before) > 0 || VoxelCell.blockLight(before) > 0) {
-							darkened++;
-						}
-					}
 					// Atomic RMW under the monitor (see applyBlockUpdate): the
 					// light rewrite must not clobber a concurrent block-state
 					// write back to its old state.
@@ -233,18 +225,8 @@ final class VoxelIngest {
 		if (changed > 0) {
 			store.markDirty(key);
 		}
-		if (darkened > 512 && lightRefreshDarkenLogged < 20) {
-			lightRefreshDarkenLogged++;
-			Iris.logger.warn("Horizon: light refresh DARKENED " + darkened + " cells in section "
-				+ chunkX + "," + sectionY + "," + chunkZ
-				+ " (sky layer " + (sky == null ? "absent" : "present")
-				+ ", aboveHighestFilled=" + aboveHighestFilled + ")");
-		}
 		return changed;
 	}
-
-	/** Bounds the light-refresh darkening diagnostic. */
-	private static volatile int lightRefreshDarkenLogged;
 
 	/** Key of the level-l section containing vanilla section (cx, sy, cz). */
 	static long targetKey(int level, int cx, int sy, int cz) {

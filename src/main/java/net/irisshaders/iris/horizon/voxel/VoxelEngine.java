@@ -554,8 +554,22 @@ public final class VoxelEngine {
 			return true; // all-air column: nothing to shade, don't stall it
 		}
 		int sectionY = chunk.getMinSection() + highest;
-		var sky = chunk.getLevel().getLightEngine().getLayerListener(LightLayer.SKY);
-		return sky.getDataLayerData(SectionPos.of(chunk.getPos().x, sectionY, chunk.getPos().z)) != null;
+		SectionPos pos = SectionPos.of(chunk.getPos().x, sectionY, chunk.getPos().z);
+		LevelLightEngine lightEngine = chunk.getLevel().getLightEngine();
+		// lightOnInSection is the engine's own "this column's light has been
+		// applied" flag. A plain non-null DataLayer is NOT enough: vanilla
+		// publishes an all-zero sky layer for a column it has not lit yet, and
+		// capturing that bakes a black surface exactly as a null layer would.
+		if (!lightEngine.lightOnInSection(pos)) {
+			return false;
+		}
+		DataLayer sky = lightEngine.getLayerListener(LightLayer.SKY).getDataLayerData(pos);
+		if (sky == null) {
+			return false;
+		}
+		// The surface section of a lit column is never uniformly dark; if it is,
+		// the data is a placeholder and the real light has not arrived.
+		return !sky.isDefinitelyFilledWith(0);
 	}
 
 	/** Whether this chunk position is still resident (a deferred capture of an unloaded chunk must not linger). */

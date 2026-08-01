@@ -25,6 +25,8 @@ public final class SectionSnapshot {
 	private final long[] cells = new long[DIM * DIM * DIM];
 	private final long[] plane = new long[VoxelConstants.SECTION_PLANE_CELLS];
 	private final long[] coreScratch = new long[VoxelConstants.SECTION_CELLS];
+	/** Per-face: was the neighbour section resident when this snapshot was taken? */
+	private final boolean[] neighborPresent = new boolean[VoxelConstants.FACE_COUNT];
 	private long coreNonAir;
 
 	private static int idx(int x, int y, int z) {
@@ -50,11 +52,23 @@ public final class SectionSnapshot {
 		for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
 			long nKey = SectionKey.faceNeighbor(coreKey, face);
 			VoxelSection neighbor = store.acquireBlocking(nKey);
+			neighborPresent[face] = neighbor != null;
 			if (neighbor != null) {
 				fillNeighbor(neighbor, face);
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * Whether the neighbour section on this face was resident when this snapshot
+	 * was taken. The mesher asks positionally instead of inferring absence from
+	 * a cell value: a never-written cell inside a resident section is also 0L,
+	 * so a value test cannot tell "no data here" from "captured, really dark"
+	 * and would shade real cave air as an open-sky wall (or vice versa).
+	 */
+	public boolean neighborPresent(int face) {
+		return neighborPresent[face];
 	}
 
 	/**

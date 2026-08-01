@@ -216,11 +216,16 @@ public final class VoxelMesher {
 				// Light from the adjacent (air/translucent) cell, vanilla-style.
 				int bl = VoxelCell.blockLight(n);
 				int sl = VoxelCell.skyLight(n);
-				if (n == VoxelConstants.UNCAPTURED_CELL) {
-					// Missing-neighbour plane (a not-yet-meshed neighbour region
-					// at the frontier): treat as open sky so the temporary
-					// boundary wall is lit instead of pitch black. Real air with
-					// captured light, and dark cave air, keep their own value.
+				// Missing-neighbour plane (a not-yet-meshed neighbour region at
+				// the frontier): treat as open sky so the temporary boundary wall
+				// is lit instead of pitch black. Asked POSITIONALLY — the sample
+				// lies outside the core and that face's neighbour section was not
+				// resident — because no cell value can express "no data": a
+				// never-written cell inside a resident section is 0L just like a
+				// captured plains air cell with no light. Real air with captured
+				// light, and dark cave air, keep their own value.
+				int perp = w + sign;
+				if ((perp < 0 || perp >= N) && !snap.neighborPresent(face)) {
 					sl = 15;
 				}
 				faceLight[v * N + u] = (bl << 4) | sl;

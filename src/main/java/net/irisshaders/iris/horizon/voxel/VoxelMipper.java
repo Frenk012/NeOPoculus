@@ -216,19 +216,36 @@ final class VoxelMipper {
 	 * lowest child index — deterministic and mode-biased, so a 7-stone/
 	 * 1-torch group stays stone. All-air children yield an air cell.
 	 *
-	 * <p>Light is averaged over all 8 children including air: block light
-	 * floors (a lone glowstone should not brighten a whole parent cell),
-	 * sky light ceils (rounding down would edge-darken distant terrain).
+	 * <p>Light is averaged over the LIGHT-CARRYING children only (air and
+	 * anything the light engine stores light in — water, leaves, glass: opacity
+	 * &lt; 15) — never over all 8. Vanilla stores no light inside opaque blocks
+	 * (their nibbles are 0), so averaging those zeros in halved a surface
+	 * parent's sky light at every level (L1~8, L2~4, L3~2, L4~1) and turned
+	 * coarse LOD progressively black as the player moved away and regions
+	 * dropped to coarser levels. Only these cells' light is ever read anyway —
+	 * the mesher shades a face with its *neighbour's* light, and a face is only
+	 * visible when that neighbour is air or opacity &lt; 15. A fully opaque
+	 * parent has no light-carrying child and keeps 0, which is correct: it is
+	 * interior rock, and any visible face of it is shaded by the cell on the
+	 * other side. Block light floors (a lone glowstone should not brighten a
+	 * whole parent cell), sky light ceils (rounding down would edge-darken
+	 * distant terrain).
 	 */
 	static long selectRepresentative(long[] children8, VoxelPalettes palettes) {
 		int blockSum = 0;
 		int skySum = 0;
+		int litChildren = 0;
 		for (int i = 0; i < 8; i++) {
-			blockSum += VoxelCell.blockLight(children8[i]);
-			skySum += VoxelCell.skyLight(children8[i]);
+			long child = children8[i];
+			if (!VoxelCell.isAir(child) && palettes.opacityOf(VoxelCell.stateId(child)) >= 15) {
+				continue; // opaque: stores no light, would drag the average to black
+			}
+			blockSum += VoxelCell.blockLight(child);
+			skySum += VoxelCell.skyLight(child);
+			litChildren++;
 		}
-		int blockAvg = blockSum >> 3;
-		int skyAvg = (skySum + 7) >> 3;
+		int blockAvg = litChildren == 0 ? 0 : blockSum / litChildren;
+		int skyAvg = litChildren == 0 ? 0 : (skySum + litChildren - 1) / litChildren;
 
 		long bestIdentity = 0L;
 		int bestOpacity = -1;

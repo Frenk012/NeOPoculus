@@ -26,8 +26,15 @@ public final class VoxelMesher {
 	private static final long LIGHT_MASK = VoxelConstants.LIGHT_MASK;
 	private static final int MAX_BYTES = VoxelConstants.MAX_QUADS_PER_REGION * 4 * LodVertexFormatV2.STRIDE;
 
+	/**
+	 * {@code bakeEpoch} is the bakery epoch read at the START of the build. The
+	 * renderer stamps fallback regions with it rather than with the epoch at
+	 * upload time, so a bake that lands while this region is still building
+	 * still counts as newer and triggers exactly one more re-mesh — the region
+	 * cannot be stranded flat by an epoch edge consumed before it was uploaded.
+	 */
 	public record MeshData(long regionKey, int level, ByteBuffer vertexData, int quads, float minY, float maxY,
-						   boolean usedFallback) {
+						   boolean usedFallback, int bakeEpoch) {
 		public void free() {
 			MemoryUtil.memFree(vertexData);
 		}
@@ -51,6 +58,7 @@ public final class VoxelMesher {
 		boolean capped = false;
 		boolean[] usedFallback = {false};
 		var metadata = bakery.metadata();
+		int startEpoch = bakery.epoch();
 
 		try {
 			for (int sxLocal = 0; sxLocal < VoxelConstants.MESH_REGION_SECTIONS && !capped; sxLocal++) {
@@ -105,10 +113,14 @@ public final class VoxelMesher {
 										int state = VoxelCell.stateId(key);
 										int biome = VoxelCell.biomeId(key);
 										int slot = metadata.slotOf(state, biome, face);
+										// Only a PENDING bake justifies flagging this region for
+										// a re-mesh. A state that is already baked and still has
+										// no slot (no usable texture, or the atlas is full) is
+										// permanently flat, and re-meshing it on every epoch bump
+										// re-built the same regions forever — the repeated
+										// "hit the quad cap; truncated" churn in the logs.
 										if (slot == 0 && !metadata.isBaked(state, biome)) {
 											bakery.requestBake(state, biome);
-										}
-										if (slot == 0) {
 											usedFallback[0] = true;
 										}
 										float[] yspan = emitQuad(buf, colors, key, faceLight[v * N + u], slot,
@@ -146,7 +158,7 @@ public final class VoxelMesher {
 		}
 		buf.limit(buf.position());
 		buf.position(0);
-		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0]);
+		return new MeshData(regionKey, level, buf, quads, minY, maxY, usedFallback[0], startEpoch);
 	}
 
 	private static ByteBuffer maybeGrow(ByteBuffer buf) {

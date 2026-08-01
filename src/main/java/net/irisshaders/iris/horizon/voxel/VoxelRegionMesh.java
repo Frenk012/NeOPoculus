@@ -16,6 +16,8 @@ public final class VoxelRegionMesh {
 	public final float maxY;
 	/** True if any face used the flat-color fallback (an unbaked state); the renderer re-meshes it when bakes land. */
 	public final boolean usedFallback;
+	/** Bakery epoch read when this mesh's build STARTED; the fallback re-mesh compares against it. */
+	public final int bakeEpoch;
 	private int vao;
 	private int vbo;
 
@@ -26,6 +28,7 @@ public final class VoxelRegionMesh {
 		this.minY = data.minY();
 		this.maxY = data.maxY();
 		this.usedFallback = data.usedFallback();
+		this.bakeEpoch = data.bakeEpoch();
 
 		vao = GL33C.glGenVertexArrays();
 		vbo = GL33C.glGenBuffers();

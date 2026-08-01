@@ -111,8 +111,8 @@ public final class VoxelRenderer {
 		}
 	}
 
-	/** Render thread: turn pending vertex data into GPU meshes, bounded per frame. {@code bakeEpoch} stamps fallback regions. */
-	public void processUploads(int budget, int bakeEpoch) {
+	/** Render thread: turn pending vertex data into GPU meshes, bounded per frame. */
+	public void processUploads(int budget) {
 		VoxelMesher.MeshData data;
 		while (budget-- > 0 && (data = uploadQueue.poll()) != null) {
 			long key = data.regionKey();
@@ -122,7 +122,10 @@ public final class VoxelRenderer {
 				old.delete();
 			}
 			if (mesh.usedFallback) {
-				fallbackEpoch.put(key, bakeEpoch);
+				// Stamp with the epoch at BUILD START, not now: a bake that landed
+				// while this region was building must still count as newer, or the
+				// region is stranded flat by an edge consumed before its upload.
+				fallbackEpoch.put(key, mesh.bakeEpoch);
 			} else {
 				fallbackEpoch.remove(key);
 			}
@@ -157,7 +160,7 @@ public final class VoxelRenderer {
 
 	/** Render thread. Draws every visible region mesh, sampling the photo atlas (flat color where unbaked). */
 	public void render(Matrix4f modelView, Matrix4f projection, net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery) {
-		processUploads(HorizonConfig.get().getMaxUploadsPerFrame(), bakery.epoch());
+		processUploads(HorizonConfig.get().getMaxUploadsPerFrame());
 		if (meshes.isEmpty() || !shader.ensure()) {
 			return;
 		}

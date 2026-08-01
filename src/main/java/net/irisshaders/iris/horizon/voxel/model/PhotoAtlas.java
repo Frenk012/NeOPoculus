@@ -85,9 +85,18 @@ public final class PhotoAtlas {
 		int prevUnpack = GL33C.glGetInteger(GL33C.GL_PIXEL_UNPACK_BUFFER_BINDING);
 		int prevRow = GL33C.glGetInteger(GL33C.GL_UNPACK_ROW_LENGTH);
 		int prevAlign = GL33C.glGetInteger(GL33C.GL_UNPACK_ALIGNMENT);
+		// SKIP_PIXELS/SKIP_ROWS must be zeroed too, not just row length and
+		// alignment. Vanilla's NativeImage.upload sets them and does not always
+		// restore them, and a non-zero value makes the driver start reading this
+		// 1 KB scratch buffer at an offset and run off its end — a hard access
+		// violation inside the GL driver, which is exactly how this crashed.
+		int prevSkipPx = GL33C.glGetInteger(GL33C.GL_UNPACK_SKIP_PIXELS);
+		int prevSkipRows = GL33C.glGetInteger(GL33C.GL_UNPACK_SKIP_ROWS);
 		GL33C.glBindBuffer(GL33C.GL_PIXEL_UNPACK_BUFFER, 0);
 		GL33C.glPixelStorei(GL33C.GL_UNPACK_ROW_LENGTH, 0);
 		GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 1);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_PIXELS, 0);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_ROWS, 0);
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, texture);
 
 		int[] level = rgba;
@@ -103,13 +112,24 @@ public final class PhotoAtlas {
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prev);
 		GL33C.glPixelStorei(GL33C.GL_UNPACK_ROW_LENGTH, prevRow);
 		GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, prevAlign);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_PIXELS, prevSkipPx);
+		GL33C.glPixelStorei(GL33C.GL_UNPACK_SKIP_ROWS, prevSkipRows);
 		GL33C.glBindBuffer(GL33C.GL_PIXEL_UNPACK_BUFFER, prevUnpack);
 		return slot;
 	}
 
 	private void uploadLevel(int mip, int x, int y, int dim, int[] pixels) {
+		int texels = dim * dim;
+		// The driver reads exactly dim*dim*4 bytes from this buffer with no
+		// bounds check of its own, so a short source array would be a native
+		// crash rather than an exception. Refuse the upload instead.
+		if (dim <= 0 || pixels.length < texels || texels * 4 > scratch.capacity()) {
+			Iris.logger.warn("Horizon: skipped a malformed atlas upload (mip " + mip
+				+ ", dim " + dim + ", " + pixels.length + " texels)");
+			return;
+		}
 		scratch.clear();
-		for (int i = 0; i < dim * dim; i++) {
+		for (int i = 0; i < texels; i++) {
 			int p = pixels[i];
 			scratch.put((byte) (p >>> 24)).put((byte) (p >>> 16)).put((byte) (p >>> 8)).put((byte) p);
 		}

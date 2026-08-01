@@ -132,7 +132,7 @@ All A/B/C constants stand as specified, with these integration edits: `STORAGE_R
 | **M5** | Translucency + fluids + light: translucent ranges, back-to-front region sort, still-sprite fluid bakes, neighbor-light faceKeys, emissive metadata, leaf-darkened mips visible | mesher/renderer/bakery touches | Oceans render as translucent water at distance; caves/overhangs dark; glowstone bright at night | M |
 | **M5b** | **Server-side LOD generation + distribution** (see §10): dedicated-server LOD builder driven by commands (region / radius / whole-world / autonomous background pass), server-side `.hlod` store, join handshake + chunked transfer over a plugin channel, client auto-download into the local store, client + server options and permissions | new `horizon.net` + `horizon.server` pkgs, `VoxelStore` reuse, config screens | Join a server that has pre-generated LOD → the whole generated area renders immediately, with zero exploration; `/horizon lod generate` progresses without stalling the server tick | XL |
 | **M6** | Shaderpack Phase-1: iris path on `VoxelRegionMesh` (irisVao), `DhMaterials` into irisExtra, real per-face normals + captured light, `faceAvgColor` flat color; `dh_water` fallback | `VoxelRenderer.renderIris`, `DhMaterials` | DH-aware packs shade/fog LOD correctly, water gets water material, cave LOD lit right | M |
-| **M7** | Parity + hardening: hysteresis, VRAM clamp, per-level evict radii, block-edit→remip→remesh latency tuning, upload budgets, warn/log discipline, acceptance tests | tuning across pkg | Mining a block updates distant LOD within ~1 s; elytra flight hitch-free; budgets hold at 4096 m | M |
+| **M7** | Parity + hardening: **underground occlusion culling (see §11)**, backface culling once quad winding is made outward-consistent, hysteresis, VRAM clamp, per-level evict radii, block-edit→remip→remesh latency tuning, upload budgets, warn/log discipline, acceptance tests | tuning across pkg, `VoxelMesher` | Mining a block updates distant LOD within ~1 s; elytra flight hitch-free; budgets hold at 4096 m; no region hits the quad cap in ordinary terrain | M–L |
 | **Post-parity (Phase 2)** | Shader injection: `patchHorizonTerrain` variant injecting atlas/LUT samplers + §2.1 UV derivation into patched `dh_terrain`, attribs 3/4 enabled, `HORIZON_TEXTURED` macro | `TransformPatcher`, `HorizonIrisProgram`, `StandardMacros` | Textured LOD under shaderpacks | L |
 
 ## 8. Risks carried forward
@@ -227,3 +227,40 @@ to stone exactly as the persistence path already does.
 On a dedicated server with `/horizon lod generate radius 4096` completed, a fresh client
 joins and sees the full 4 km LOD panorama within seconds of spawning, having explored
 nothing; mining a block updates distant LOD for every online client within ~1 s.
+
+## 11. M7 — Underground occlusion culling (confirmed need)
+
+**Evidence.** A single ordinary session logged 185 `hit the quad cap; truncated`
+warnings before the shape work even landed, and truncation is not cosmetic — it drops
+geometry, so terrain visibly loses pieces. `MAX_QUADS_PER_REGION` was raised from
+131072 to 262144 as a stopgap (commit "raise the voxel region quad cap"), which costs
+up to 25 MB per in-flight region buffer and only postpones the problem.
+
+**Why the budget is blown.** An L0 mesh region spans 128×128 blocks over the *full*
+world height. The mesher emits a face wherever a solid cell meets a non-opaque one, so
+every wall of every cave, ravine and ore pocket in that column becomes quads — geometry
+nothing outside the terrain can ever see. Overworld cave density means the underground
+routinely outweighs the surface it is hidden beneath.
+
+**What must NOT be done.** Skipping faces whose adjacent air cell has zero light was
+considered and rejected: the underside of an overhang or cliff commonly borders shaded
+air at light 0, so that rule punches holes in terrain seen from below. Darkness is not
+a proxy for invisibility.
+
+**Approach.** Decide visibility from *enclosure*, not from light:
+
+- During ingest, per column of each section, record the highest solid cell (a
+  heightmap already implicit in the pyramid). A cell strictly below the column's
+  surface, whose 6 neighbours are all solid-or-below-surface, cannot be reached by any
+  ray from outside and needs no faces.
+- Cheaper first cut, worth measuring on its own: flood-fill air connectivity per
+  section from its boundary faces. Air cells not reachable from the section boundary
+  are sealed pockets; faces bordering only sealed air are skipped. One pass per
+  section, results cached beside the section.
+- Coarse levels benefit automatically: a mip cell is solid when its children are, so
+  the culled volume grows with level.
+
+**Acceptance.** No `hit the quad cap` warnings in ordinary terrain at default settings;
+quad count per region for a cave-heavy chunk column drops substantially with no visible
+difference from any outside viewpoint, including from below an overhang and from inside
+a ravine mouth; `MAX_QUADS_PER_REGION` can then be returned to 131072.

@@ -496,10 +496,17 @@ public final class VoxelEngine {
 				// lose — skip it (block edits since load came through their own path).
 				continue;
 			}
+			// Trust is a property of the LIGHT, never of which queue the chunk came
+			// from. A chunk can sit in the load queue until after it unloads (the
+			// queue holds a strong reference, so its states stay readable while the
+			// client wipes its light layers); capturing that as trusted would write
+			// sky=0 over correct cells with the untrusted guard disabled — the exact
+			// damage that guard exists to stop.
+			boolean lightReady = requireLight && isLightReady(chunk);
 			// Defer only while the chunk is still loaded; a chunk that unloaded
 			// while waiting for light gets captured now (last chance) rather than
-			// looping forever in the queue.
-			if (requireLight && !isLightReady(chunk) && chunkStillLoaded(chunk)) {
+			// looping forever in the queue — but as UNTRUSTED.
+			if (requireLight && !lightReady && chunkStillLoaded(chunk)) {
 				if (deferred == null) {
 					deferred = new ArrayList<>();
 				}
@@ -507,10 +514,10 @@ public final class VoxelEngine {
 				continue;
 			}
 			taken++;
-			if (requireLight) {
+			if (lightReady) {
 				capturedChunks.add(chunkPos);
 			}
-			captureChunk(s, chunk, requireLight);
+			captureChunk(s, chunk, lightReady);
 		}
 		if (deferred != null) {
 			queue.addAll(deferred); // retry next tick, once light has propagated
@@ -530,6 +537,18 @@ public final class VoxelEngine {
 		if (!chunk.getLevel().dimensionType().hasSkyLight()) {
 			return true; // Nether/End have no skylight to wait for; never stall them
 		}
+		// Only trust light in the INTERIOR of the loaded area. Unloading a chunk
+		// makes the client mark all its sections empty
+		// (ClientPacketListener.queueLightRemoval -> updateSectionStatus(pos, true)),
+		// which re-propagates sky light into the still-loaded neighbours. Those
+		// queued updates drain in bulk once the player stops moving, so a chunk on
+		// the border is regularly mid-recalculation — capturing it then freezes
+		// transient darkness into the LOD forever. An edge chunk simply waits; it
+		// becomes interior as the player approaches, and its unload capture is
+		// still the last-chance path if they never do.
+		if (!neighborsLoaded(chunk)) {
+			return false;
+		}
 		int highest = chunk.getHighestFilledSectionIndex();
 		if (highest < 0) {
 			return true; // all-air column: nothing to shade, don't stall it
@@ -542,6 +561,15 @@ public final class VoxelEngine {
 	/** Whether this chunk position is still resident (a deferred capture of an unloaded chunk must not linger). */
 	private static boolean chunkStillLoaded(LevelChunk chunk) {
 		return chunk.getLevel().getChunkSource().hasChunk(chunk.getPos().x, chunk.getPos().z);
+	}
+
+	/** Whether all four cardinal neighbours of this chunk are loaded, i.e. its light is not being re-propagated. */
+	private static boolean neighborsLoaded(LevelChunk chunk) {
+		var source = chunk.getLevel().getChunkSource();
+		int cx = chunk.getPos().x;
+		int cz = chunk.getPos().z;
+		return source.hasChunk(cx - 1, cz) && source.hasChunk(cx + 1, cz)
+			&& source.hasChunk(cx, cz - 1) && source.hasChunk(cx, cz + 1);
 	}
 
 	/**
@@ -649,8 +677,8 @@ public final class VoxelEngine {
 			int sy = SectionPos.y(sectionKey);
 			int cz = SectionPos.z(sectionKey);
 			LevelChunk chunk = mc.level.getChunkSource().getChunk(cx, cz, false);
-			if (chunk == null) {
-				continue; // unloaded meanwhile; it re-ingests on re-approach
+			if (chunk == null || !neighborsLoaded(chunk)) {
+				continue; // unloaded, or on the border where light is being re-propagated
 			}
 			SectionPos pos = SectionPos.of(cx, sy, cz);
 			DataLayer sky = skyLayer.getDataLayerData(pos);

@@ -122,8 +122,20 @@ public final class VoxelConstants {
 	public static final int Y_BIAS = 512;
 	/** Vertex format v2 stride, bytes (LodVertexFormatV2). */
 	public static final int VERTEX_STRIDE = 24;
-	/** Hard per-region quad emit cap; overflow is logged once and truncated. */
-	public static final int MAX_QUADS_PER_REGION = 131_072;
+	/**
+	 * Hard per-region quad emit cap; overflow is logged and truncated, which
+	 * means visibly missing geometry, so it must sit above what a genuinely dense
+	 * region needs. An L0 mesh region spans 128×128 blocks over the full world
+	 * height and meshes every cave wall in that column, and 131072 was being hit
+	 * repeatedly in ordinary terrain. The buffer starts at 2 MB and doubles on
+	 * demand, so this ceiling only costs memory for the regions that truly need
+	 * it (4 vertices × 24 B per quad = 25 MB at the cap).
+	 *
+	 * <p>The real fix is to stop meshing sealed underground caves at all, which
+	 * belongs with the M7 perf work; raising the ceiling is the stopgap that
+	 * keeps terrain from losing chunks in the meantime.
+	 */
+	public static final int MAX_QUADS_PER_REGION = 262_144;
 
 	// --- Two-tier residency (VoxelStore, design-data-storage.md section 5.2) ---
 	/**

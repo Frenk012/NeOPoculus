@@ -18,12 +18,17 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.lighting.LayerLightEventListener;
+import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.neoforged.fml.loading.FMLPaths;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -57,6 +62,10 @@ public final class VoxelEngine {
 	private static final int MAX_SNAPSHOTS_PER_TICK = 4;
 	/** Design section 3.5: block updates drained per tick into one worker batch. */
 	private static final int MAX_BLOCK_UPDATES_PER_TICK = 256;
+	/** Sections whose LOD light is rewritten per tick (one 4096-cell pass each, on a worker). */
+	private static final int MAX_LIGHT_REFRESHES_PER_TICK = 16;
+	/** How long after a block edit the light engine is assumed settled (0.5 s). */
+	private static final int LIGHT_REFRESH_DELAY_TICKS = 10;
 	/**
 	 * Backpressure ceiling on snapshots alive between capture and ingest
 	 * (~13 MB worst case). While at the ceiling only unload captures run —
@@ -133,6 +142,28 @@ public final class VoxelEngine {
 	private final AtomicInteger blockUpdateQueueSize = new AtomicInteger();
 	/** Snapshots submitted to workers and not yet ingested; the backpressure gauge. */
 	private final AtomicInteger pendingSnapshots = new AtomicInteger();
+	/**
+	 * Chunk positions already captured this session WITH trustworthy light. A
+	 * chunk must have been loaded to be unloaded, so anything in here already
+	 * holds good cells and its unload re-capture — whose light the client has
+	 * since thrown away — must be skipped entirely rather than allowed to write
+	 * sky=0 over them. A chunk that is absent here was never captured (deferred
+	 * waiting for light, or dropped under backpressure), so its unload capture
+	 * is still the genuine last chance at its data. Client thread only.
+	 */
+	private final Set<Long> capturedChunks = new HashSet<>();
+	/**
+	 * Vanilla sections touched by a block update, mapped to the tick it happened
+	 * (client thread only). {@link VoxelIngest#applyBlockUpdate} deliberately
+	 * keeps the cell's OLD light bits, because the real light is only known once
+	 * the client's light engine has propagated the change — so a cell that
+	 * became air keeps the solid block's zero light and shades every face beside
+	 * it black until someone rewrites it. That rewrite is
+	 * {@link VoxelIngest#applySectionLight}, which had no callers at all; this
+	 * map is what finally drives it, a few ticks after the edit so the light
+	 * engine has settled.
+	 */
+	private final Map<Long, Integer> lightRefreshSections = new HashMap<>();
 	/** Mesh regions (all levels) whose data changed since the last drain; the renderer re-meshes them. */
 	private final java.util.Set<Long> dirtyMeshRegions = ConcurrentHashMap.newKeySet();
 
@@ -214,6 +245,8 @@ public final class VoxelEngine {
 		}
 		blockUpdateQueue.add(new BlockUpdate(pos.asLong(), newState));
 		blockUpdateQueueSize.incrementAndGet();
+		// Queue this section for a light refresh once the light engine settles.
+		lightRefreshSections.put(SectionPos.asLong(pos), tickCounter);
 	}
 
 	/** Per-tick pump: snapshot budget, block-update drain, remip kicks, eviction cadence. */
@@ -234,6 +267,7 @@ public final class VoxelEngine {
 		drainSnapshots(s);
 		if (m != null) {
 			drainBlockUpdates(s, m);
+			drainLightRefreshes(mc, s, m);
 			kickRemips(m);
 		}
 		// Persistence + eviction: full save+evict on the sweep cadence, a lighter
@@ -270,6 +304,7 @@ public final class VoxelEngine {
 		}
 		loadQueue.clear();
 		unloadQueue.clear();
+		capturedChunks.clear();
 		blockUpdateQueue.clear();
 		blockUpdateQueueSize.set(0);
 		blockUpdateDropLogged = false;
@@ -452,6 +487,15 @@ public final class VoxelEngine {
 				// dimension switches) — same guard as the classic engine.
 				continue;
 			}
+			long chunkPos = chunk.getPos().toLong();
+			if (!requireLight && capturedChunks.remove(chunkPos)) {
+				// Unload capture of a chunk we already captured with real light:
+				// the client wiped its light layers right after posting the unload
+				// event, so re-ingesting now would write sky=0 over good cells and
+				// blacken this chunk permanently. Nothing to gain, everything to
+				// lose — skip it (block edits since load came through their own path).
+				continue;
+			}
 			// Defer only while the chunk is still loaded; a chunk that unloaded
 			// while waiting for light gets captured now (last chance) rather than
 			// looping forever in the queue.
@@ -463,6 +507,9 @@ public final class VoxelEngine {
 				continue;
 			}
 			taken++;
+			if (requireLight) {
+				capturedChunks.add(chunkPos);
+			}
 			captureChunk(s, chunk, requireLight);
 		}
 		if (deferred != null) {
@@ -566,6 +613,67 @@ public final class VoxelEngine {
 			}
 		});
 		remipArmedUntilTick = tickCounter + REMIP_ARMED_TICKS;
+	}
+
+	/**
+	 * Rewrites LOD light for sections whose blocks changed, a few ticks after the
+	 * edit so the client light engine has finished propagating. Without this the
+	 * light bits written at capture time are the only ones a cell ever gets: a
+	 * cell that a block update turned into air keeps the solid block's zero
+	 * light and blackens every face beside it, permanently and cumulatively.
+	 *
+	 * <p>The layers are copied here (client thread — the light engine is not
+	 * safely readable off-thread) and handed to a worker. A section whose sky
+	 * layer is missing is skipped rather than refreshed: its light is unknown,
+	 * not zero, and writing the null-sky fallback is exactly the mistake the
+	 * unload capture used to make.
+	 */
+	private void drainLightRefreshes(Minecraft mc, VoxelStore s, VoxelMipper m) {
+		if (lightRefreshSections.isEmpty() || mc.level == null) {
+			return;
+		}
+		LevelLightEngine lightEngine = mc.level.getLightEngine();
+		LayerLightEventListener blockLayer = lightEngine.getLayerListener(LightLayer.BLOCK);
+		LayerLightEventListener skyLayer = lightEngine.getLayerListener(LightLayer.SKY);
+		boolean hasSkyLight = mc.level.dimensionType().hasSkyLight();
+		int done = 0;
+		for (Iterator<Map.Entry<Long, Integer>> it = lightRefreshSections.entrySet().iterator();
+			 it.hasNext() && done < MAX_LIGHT_REFRESHES_PER_TICK; ) {
+			Map.Entry<Long, Integer> e = it.next();
+			if (tickCounter - e.getValue() < LIGHT_REFRESH_DELAY_TICKS) {
+				continue; // still settling
+			}
+			long sectionKey = e.getKey();
+			it.remove();
+			int cx = SectionPos.x(sectionKey);
+			int sy = SectionPos.y(sectionKey);
+			int cz = SectionPos.z(sectionKey);
+			LevelChunk chunk = mc.level.getChunkSource().getChunk(cx, cz, false);
+			if (chunk == null) {
+				continue; // unloaded meanwhile; it re-ingests on re-approach
+			}
+			SectionPos pos = SectionPos.of(cx, sy, cz);
+			DataLayer sky = skyLayer.getDataLayerData(pos);
+			boolean above = sy > chunk.getMinSection() + chunk.getHighestFilledSectionIndex();
+			if (hasSkyLight && sky == null && !above) {
+				continue; // unknown, not dark — never write the fallback over real cells
+			}
+			DataLayer block = blockLayer.getDataLayerData(pos);
+			DataLayer blockCopy = block == null ? null : block.copy();
+			DataLayer skyCopy = sky == null ? null : sky.copy();
+			done++;
+			worker.submit(() -> {
+				try {
+					int changed = VoxelIngest.applySectionLight(s, m, cx, sy, cz, blockCopy, skyCopy, above);
+					if (changed > 0) {
+						markMeshRegionsDirty(cx, cz);
+					}
+				} catch (Throwable t) {
+					Iris.logger.error("Horizon: voxel light refresh failed for section "
+						+ cx + "," + sy + "," + cz, t);
+				}
+			});
+		}
 	}
 
 	/**

@@ -30,7 +30,10 @@ public final class LodGenerator {
 	private static final long LOG_INTERVAL_MS = 5_000L;
 
 	private final ServerLevel level;
+	/** Client engine target (integrated server); null when running headless. */
 	private final VoxelEngine engine;
+	/** Server-side store target (dedicated server); null when targeting the client engine. */
+	private final net.irisshaders.iris.horizon.voxel.ServerVoxelStores serverStores;
 	private final ChunkPos[] work;
 	private final boolean generateMissing;
 	private final long budgetMs;
@@ -50,6 +53,7 @@ public final class LodGenerator {
 						 boolean generateMissing, long budgetMs) {
 		this.level = level;
 		this.engine = engine;
+		this.serverStores = engine == null ? HorizonLodServer.serverStores(level.getServer()) : null;
 		this.work = work;
 		this.generateMissing = generateMissing;
 		this.budgetMs = budgetMs;
@@ -189,7 +193,7 @@ public final class LodGenerator {
 				cursor++;
 				continue;
 			}
-			if (engine.captureForGeneration(chunk)) {
+			if (capture(chunk)) {
 				captured++;
 				cursor++;
 			} else {
@@ -203,6 +207,18 @@ public final class LodGenerator {
 		done = true;
 		logProgress(true);
 		return false;
+	}
+
+	/**
+	 * Routes the capture to whichever LOD residency this run targets: the live
+	 * client engine on an integrated server (same process, so the player sees the
+	 * result immediately), or the server's own store when headless.
+	 */
+	private boolean capture(LevelChunk chunk) {
+		if (engine != null) {
+			return engine.captureForGeneration(chunk);
+		}
+		return serverStores != null && serverStores.captureChunk(level, chunk);
 	}
 
 	/**

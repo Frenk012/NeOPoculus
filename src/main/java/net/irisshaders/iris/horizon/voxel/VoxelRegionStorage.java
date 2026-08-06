@@ -128,6 +128,20 @@ final class VoxelRegionStorage {
 	 */
 	private final ConcurrentHashMap<Long, Object> regionLocks = new ConcurrentHashMap<>();
 
+	/**
+	 * Storage rooted at an explicit LOD directory, for the dedicated server,
+	 * whose cache lives inside the world folder rather than under the game
+	 * directory keyed by a world id.
+	 */
+	VoxelRegionStorage(Path lodRoot, String dimensionId) {
+		this.voxelDir = lodRoot.resolve(sanitize(dimensionId)).resolve("voxel");
+		try {
+			Files.createDirectories(voxelDir);
+		} catch (IOException e) {
+			Iris.logger.error("Horizon: cannot create voxel LOD storage directory " + voxelDir, e);
+		}
+	}
+
 	VoxelRegionStorage(Path gameDir, String worldId, String dimensionId) {
 		this.voxelDir = gameDir.resolve("horizon-lod")
 			.resolve(sanitize(worldId))

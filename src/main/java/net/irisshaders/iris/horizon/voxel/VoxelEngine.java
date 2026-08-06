@@ -619,37 +619,8 @@ public final class VoxelEngine {
 	 * light packet has been applied.
 	 */
 	private static boolean isLightReady(LevelChunk chunk) {
-		if (!chunk.getLevel().dimensionType().hasSkyLight()) {
-			return true; // Nether/End have no skylight to wait for; never stall them
-		}
-		// NOTE: an earlier version also required all four cardinal neighbours to be
-		// loaded, on the theory that a border chunk's light is mid-repropagation.
-		// That was speculation, and it starved the engine: freshly loaded chunks
-		// are ALWAYS on the border, so exactly the chunks new LOD comes from were
-		// deferred every time and terrain generated only in patches. The
-		// blackening it was meant to prevent turned out to be the light-trust bug
-		// fixed in VoxelEngine.drainCaptures. If border light ever proves to be a
-		// real problem, it needs evidence and a narrower remedy than this.
-		int highest = chunk.getHighestFilledSectionIndex();
-		if (highest < 0) {
-			return true; // all-air column: nothing to shade, don't stall it
-		}
-		int sectionY = chunk.getMinSection() + highest;
-		SectionPos pos = SectionPos.of(chunk.getPos().x, sectionY, chunk.getPos().z);
-		LevelLightEngine lightEngine = chunk.getLevel().getLightEngine();
-		// lightOnInSection is the engine's own "this column's light has been
-		// applied" flag. A plain non-null DataLayer is NOT enough: vanilla
-		// publishes an all-zero sky layer for a column it has not lit yet, and
-		// capturing that bakes a black surface exactly as a null layer would.
-		if (!lightEngine.lightOnInSection(pos)) {
-			return false;
-		}
-		// A present layer plus the engine's own "light is on here" flag is the
-		// signal. Deliberately NOT also rejecting an all-zero layer: a highest
-		// filled section that happens to be solid all the way up (mountainsides,
-		// deep terrain) is legitimately dark, and rejecting it deferred those
-		// chunks forever.
-		return lightEngine.getLayerListener(LightLayer.SKY).getDataLayerData(pos) != null;
+		// One shared rule with the server generator; see VoxelLightReadiness.
+		return VoxelLightReadiness.isReady(chunk);
 	}
 
 	/** Whether this chunk position is still resident (a deferred capture of an unloaded chunk must not linger). */

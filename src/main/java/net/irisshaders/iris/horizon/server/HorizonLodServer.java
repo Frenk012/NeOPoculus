@@ -37,6 +37,31 @@ public final class HorizonLodServer {
 	}
 
 	private static boolean registered;
+	/** Server-side LOD residency, created on server start when running headless. */
+	private static net.irisshaders.iris.horizon.voxel.ServerVoxelStores stores;
+	private static int tickCounter;
+
+	/**
+	 * The server's own LOD stores, created on demand. Only ever used when there
+	 * is no client engine in this process; on an integrated server the generator
+	 * writes into the client's live store so the player sees the result at once.
+	 */
+	public static synchronized net.irisshaders.iris.horizon.voxel.ServerVoxelStores serverStores(
+			net.minecraft.server.MinecraftServer server) {
+		if (stores == null && server != null) {
+			stores = new net.irisshaders.iris.horizon.voxel.ServerVoxelStores(server);
+		}
+		return stores;
+	}
+
+	/** True when this JVM has no client, so the generator must target the server store. */
+	private static boolean headless() {
+		try {
+			return !net.neoforged.fml.loading.FMLLoader.getDist().isClient();
+		} catch (Throwable t) {
+			return true;
+		}
+	}
 
 	public static void register() {
 		if (registered) {
@@ -47,14 +72,25 @@ public final class HorizonLodServer {
 			RegisterCommandsEvent.class, HorizonLodServer::onRegisterCommands);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
 			ServerTickEvent.Post.class, HorizonLodServer::onServerTick);
-		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
-			ServerStoppingEvent.class, e -> active = null);
+		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ServerStoppingEvent.class, e -> {
+			active = null;
+			var s = stores;
+			stores = null;
+			if (s != null) {
+				s.shutdown();
+			}
+		});
 	}
 
 	private static void onServerTick(ServerTickEvent.Post event) {
 		LodGenerator generator = active;
 		if (generator != null && !generator.tick()) {
 			active = null;
+		}
+		// Periodic save of the server's own store (15 s), mirroring the client
+		// engine's cadence. Nothing to do when the client engine owns the data.
+		if (stores != null && ++tickCounter % 300 == 0) {
+			stores.save();
 		}
 	}
 
@@ -98,35 +134,19 @@ public final class HorizonLodServer {
 	}
 
 	private static int generate(CommandSourceStack src, int radiusBlocks, boolean generateMissing) {
-		if (active != null && !active.isDone()) {
-			src.sendFailure(Component.literal("Horizon: a LOD generation is already running — /horizon lod status"));
-			return 0;
-		}
-		if (!HorizonConfig.get().isEnabled() || !HorizonConfig.get().isVoxelEngine()) {
-			src.sendFailure(Component.literal("Horizon: the voxel LOD engine is not enabled"));
-			return 0;
-		}
-		VoxelEngine engine = HorizonLod.INSTANCE.voxel();
-		if (engine == null || !engine.isActive()) {
-			src.sendFailure(Component.literal(
-				"Horizon: no LOD store for this world yet — load into the world first"));
-			return 0;
-		}
-		ServerLevel level = src.getLevel();
 		var origin = src.getPosition();
-		LodGenerator generator = LodGenerator.radius(level, engine,
-			(int) Math.floor(origin.x), (int) Math.floor(origin.z), radiusBlocks, generateMissing);
-		active = generator;
-		Iris.logger.info("Horizon: LOD generation started, radius " + radiusBlocks + " blocks"
-			+ (generateMissing ? " (generating missing terrain)" : " (existing chunks only)"));
-		src.sendSuccess(() -> Component.literal("Horizon: generating LOD within " + radiusBlocks
-			+ " blocks" + (generateMissing ? ", generating missing terrain" : ", existing chunks only")
-			+ " — /horizon lod status"), true);
-		return 1;
+		return start(src, s2 -> LodGenerator.radius(s2.getLevel(), engineOrNull(),
+				(int) Math.floor(origin.x), (int) Math.floor(origin.z), radiusBlocks, generateMissing),
+			radiusBlocks + " blocks around you"
+				+ (generateMissing ? ", generating missing terrain" : ", existing terrain only"));
 	}
 
 	/** The live voxel engine, or null when the LOD is off or no world is loaded. */
 	private static VoxelEngine engineOrNull() {
+		// Never touch HorizonLod on a dedicated server: it holds client types.
+		if (headless()) {
+			return null;
+		}
 		VoxelEngine engine = HorizonLod.INSTANCE.voxel();
 		return engine != null && engine.isActive() ? engine : null;
 	}

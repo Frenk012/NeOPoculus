@@ -326,6 +326,18 @@ public final class VoxelPalettes {
 		return states[FALLBACK_STATE_ID];
 	}
 
+	/**
+	 * Id for a biome by registry name, registering it if new. Used when mapping a
+	 * server's palette onto this one: biomes travel as names, not ids.
+	 */
+	public int idForBiomeName(ResourceLocation name) {
+		if (name == null) {
+			return FALLBACK_BIOME_ID;
+		}
+		Integer id = biomeToId.get(name);
+		return id != null ? id : registerBiome(name);
+	}
+
 	/** Biome registry name for an id; plains for anything unresolvable. */
 	public ResourceLocation biomeOf(int id) {
 		ResourceLocation[] biomes = biomesById;
@@ -620,6 +632,43 @@ public final class VoxelPalettes {
 	 * slot re-emits its retained NBT verbatim so removed-mod ids survive the
 	 * round-trip. Biomes are written from id 1 (skipping reserved plains at 0).
 	 */
+	/**
+	 * The palette serialised to the same NBT layout the disk format uses, for
+	 * sending to a client. Gzipped, so a large modded palette stays a reasonable
+	 * packet. Returns null if it cannot be produced — the caller then simply does
+	 * not offer LOD rather than sending something unreadable.
+	 */
+	public byte[] toNbtBytes() {
+		CompoundTag root;
+		synchronized (registerLock) {
+			root = snapshotToTagLocked();
+		}
+		try (java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+			NbtIo.writeCompressed(root, out);
+			return out.toByteArray();
+		} catch (Throwable t) {
+			Iris.logger.error("Horizon: could not serialise the LOD palette for transfer", t);
+			return null;
+		}
+	}
+
+	/**
+	 * Reads a palette blob produced by {@link #toNbtBytes} WITHOUT adopting its
+	 * ids: the caller maps them onto its own id space. Returns the raw tag, or
+	 * null when the blob is unreadable or larger than the cap.
+	 */
+	public static CompoundTag readNbtBytes(byte[] blob, int maxBytes) {
+		if (blob == null || blob.length == 0 || blob.length > maxBytes) {
+			return null;
+		}
+		try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(blob)) {
+			return NbtIo.readCompressed(in, NbtAccounter.create(maxBytes * 4L));
+		} catch (Throwable t) {
+			Iris.logger.warn("Horizon: rejected an unreadable LOD palette blob");
+			return null;
+		}
+	}
+
 	private CompoundTag snapshotToTagLocked() {
 		CompoundTag root = new CompoundTag();
 		root.putInt(TAG_VERSION, PALETTE_FORMAT_VERSION);

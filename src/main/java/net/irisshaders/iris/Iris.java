@@ -113,6 +113,8 @@ public class Iris {
 			// touching it on a dedicated server would drag client classes into a
 			// JVM that does not have them.
 			net.irisshaders.iris.horizon.server.HorizonLodServer.register();
+			net.irisshaders.iris.horizon.net.ServerLodNetwork.register();
+			modEventBus.addListener(net.irisshaders.iris.horizon.net.HorizonPayloads::register);
 
 			if (FMLLoader.getDist().isClient()) {
 				modEventBus.addListener((net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent event) ->

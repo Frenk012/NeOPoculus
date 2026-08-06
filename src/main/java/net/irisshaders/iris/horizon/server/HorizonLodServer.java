@@ -54,6 +54,11 @@ public final class HorizonLodServer {
 		return stores;
 	}
 
+	/** The server stores if they already exist, without creating them. Network code asks this way. */
+	public static net.irisshaders.iris.horizon.voxel.ServerVoxelStores serverStoresIfPresent() {
+		return stores;
+	}
+
 	/** True when this JVM has no client, so the generator must target the server store. */
 	private static boolean headless() {
 		try {

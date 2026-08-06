@@ -279,6 +279,29 @@ public final class VoxelEngine {
 		currentWorldId = null;
 	}
 
+	/**
+	 * Installs one section received from a server, on a worker so the network
+	 * thread is never held. The install path rewrites ids into this client's own
+	 * palette (see {@link ClientLodInstall}) and then dirties the covering mesh
+	 * regions, which is what makes the renderer pick the data up — data that is
+	 * merely stored is invisible, as pre-generation proved.
+	 */
+	public void installServerSection(ClientLodInstall installer, long sectionKey, byte[] cells) {
+		VoxelStore s = store;
+		if (s == null || installer == null) {
+			return;
+		}
+		worker.submit(() -> {
+			try {
+				if (installer.install(s, sectionKey, cells)) {
+					markMeshRegionsDirty(SectionKey.x(sectionKey) << 1, SectionKey.z(sectionKey) << 1);
+				}
+			} catch (Throwable t) {
+				Iris.logger.error("Horizon: server LOD section install failed", t);
+			}
+		});
+	}
+
 	/** Ensures a store exists for this level; the generator needs one before capturing. Server or client thread. */
 	public void ensureWorldFor(net.minecraft.client.multiplayer.ClientLevel level) {
 		ensureWorld(level);

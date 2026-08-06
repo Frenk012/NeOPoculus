@@ -222,6 +222,36 @@ public final class VoxelEngine {
 	}
 
 	/**
+	 * Captures one chunk straight into the LOD, for the server-side generator
+	 * (M5b phase A) rather than for player exploration. The caller owns the
+	 * chunk's thread — on an integrated server that is the server thread, which
+	 * is the thread that may safely read its containers.
+	 *
+	 * <p>Returns false when the chunk's light has not settled yet, so the
+	 * generator can retry it instead of baking a dark chunk into the LOD
+	 * permanently — the failure mode that took a whole debugging session to find
+	 * on the capture path.
+	 *
+	 * @return true when the chunk was submitted for ingest.
+	 */
+	public boolean captureForGeneration(LevelChunk chunk) {
+		VoxelStore s = store;
+		if (s == null || chunk == null) {
+			return false;
+		}
+		if (!isLightReady(chunk)) {
+			return false;
+		}
+		captureChunk(s, chunk, true);
+		return true;
+	}
+
+	/** Ensures a store exists for this level; the generator needs one before capturing. Server or client thread. */
+	public void ensureWorldFor(net.minecraft.client.multiplayer.ClientLevel level) {
+		ensureWorld(level);
+	}
+
+	/**
 	 * Mixin funnel for server-verified block changes (design section 3.5).
 	 * Client thread; must stay cheap — one dimension check and one queue
 	 * offer. The state rides along because the level is not safely readable

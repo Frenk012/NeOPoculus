@@ -754,6 +754,10 @@ public class Iris {
 		DHCompat.run();
 
 		net.irisshaders.iris.horizon.HorizonLod.init();
+		// Phase A registers the LOD generation commands from the client entry
+		// point because the integrated server lives in this same process; phase B
+		// moves this to the mod constructor so a dedicated server gets it too.
+		net.irisshaders.iris.horizon.HorizonLod.initServer();
 
 		try {
 			if (!Files.exists(getShaderpacksDirectory())) {

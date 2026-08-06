@@ -114,6 +114,16 @@ public final class HorizonLod {
 		Iris.logger.info("Horizon extended LOD system initialized");
 	}
 
+	/**
+	 * Registers the server-side LOD generation commands (M5b phase A). Called
+	 * unconditionally, not behind the client check above: the command tree and
+	 * its tick pump live on the common event bus, which is what lets the same
+	 * code serve a dedicated server in phase B.
+	 */
+	public static void initServer() {
+		net.irisshaders.iris.horizon.server.HorizonLodServer.register();
+	}
+
 	/** Voxel-engine orchestrator; the block-update mixin and the GUI reach it here. */
 	public VoxelEngine voxel() {
 		return voxelEngine;

@@ -413,8 +413,15 @@ public final class HorizonLod {
 		// sweep, so this pass just refreshes stale partial meshes into complete
 		// ones instead of re-doing initial work.
 		for (long key : voxelEngine.drainDirtyMeshRegions()) {
+			// This region just gained data, so a previous "empty" verdict is
+			// stale. Clearing it is what lets the ring sweep pick the region up:
+			// without this, anything the LOD generator ingests outside the
+			// player's own chunk loads is captured, persisted — and never meshed,
+			// because emptyVoxelRegions was only ever cleared by a client chunk
+			// load, which pre-generation does not produce.
+			emptyVoxelRegions.remove(key);
 			if (scheduled[0] >= MAX_VOXEL_SCHEDULED_PER_TICK) {
-				break;
+				continue;
 			}
 			if (voxelRenderer.hasMesh(key)) {
 				submitVoxelBuild(store, colors, palettes, key, worldMinY, worldMaxY, scheduled);

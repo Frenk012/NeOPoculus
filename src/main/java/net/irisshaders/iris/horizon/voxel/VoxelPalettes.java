@@ -835,17 +835,39 @@ public final class VoxelPalettes {
 		try {
 			var fluid = state.getFluidState();
 			if (!fluid.isEmpty()) {
-				return net.minecraft.client.renderer.ItemBlockRenderTypes.getRenderLayer(fluid)
-					== net.minecraft.client.renderer.RenderType.translucent();
+				// Decided from TAGS, never from the client render-type maps: a
+				// fluid's translucency feeds computeOpacity, which decides which
+				// child wins in VoxelMipper.selectRepresentative, which is baked
+				// into persisted mip cells. A server generating LOD must reach the
+				// same answer as a client or the two disagree on stored data.
+				// Water-like fluids are translucent; lava is not.
+				return fluid.is(net.minecraft.tags.FluidTags.WATER);
 			}
+			// Non-fluid translucency only routes a face into the translucent draw
+			// pass — it never reaches a cell — so it may safely be client-only and
+			// simply false anywhere without a render layer registry.
+			return isClient() && clientRenderTranslucent(state);
+		} catch (Throwable t) {
+			return false;
+		}
+	}
+
+	/** True on a physical client; a dedicated server has no render-type registry to ask. */
+	private static boolean isClient() {
+		try {
+			return net.neoforged.fml.loading.FMLLoader.getDist().isClient();
+		} catch (Throwable t) {
+			return false;
+		}
+	}
+
+	/** Client-only: whether vanilla draws this state in the translucent chunk layer. */
+	private static boolean clientRenderTranslucent(BlockState state) {
+		try {
 			return net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(state)
 				== net.minecraft.client.renderer.RenderType.translucent();
 		} catch (Throwable t) {
-			try {
-				return state.getFluidState().is(net.minecraft.tags.FluidTags.WATER);
-			} catch (Throwable ignored) {
-				return false;
-			}
+			return false;
 		}
 	}
 

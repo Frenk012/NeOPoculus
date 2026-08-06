@@ -114,6 +114,7 @@ public class Iris {
 			// JVM that does not have them.
 			net.irisshaders.iris.horizon.server.HorizonLodServer.register();
 			net.irisshaders.iris.horizon.net.ServerLodNetwork.register();
+			net.irisshaders.iris.horizon.net.ServerLodSender.register();
 			modEventBus.addListener(net.irisshaders.iris.horizon.net.HorizonPayloads::register);
 
 			if (FMLLoader.getDist().isClient()) {

@@ -53,6 +53,7 @@ public final class ServerLodNetwork {
 	private static void onLogout(PlayerEvent.PlayerLoggedOutEvent event) {
 		subscribers.remove(event.getEntity().getUUID());
 		paletteSent.remove(event.getEntity().getUUID());
+		ServerLodSender.forget(event.getEntity().getUUID());
 	}
 
 	/**

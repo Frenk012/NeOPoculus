@@ -90,6 +90,7 @@ public final class VoxelBakery {
 		} catch (Throwable ignored) {
 		}
 		Biome biome = resolveBiome(biomeId, palettes);
+		boolean leafLike = palettes.isLeaf(stateId);
 		int[] faceSlots = new int[VoxelConstants.FACE_COUNT];
 		boolean tinted = false;
 		for (int f = 0; f < VoxelConstants.FACE_COUNT; f++) {
@@ -99,20 +100,22 @@ public final class VoxelBakery {
 				continue;
 			}
 			tinted |= baked.tinted();
-			faceSlots[f] = uploadDedup(baked.photo());
+			faceSlots[f] = uploadDedup(baked.photo(), leafLike);
 		}
 		metadata.setBaked(stateId, biomeId, tinted, faceSlots);
 		epoch.incrementAndGet();
 	}
 
 	/** Uploads a photo, deduplicating identical ones; returns the atlas slot (0 = flat fallback / atlas full). */
-	private int uploadDedup(int[] photo) {
-		long hash = hash(photo);
+	private int uploadDedup(int[] photo, boolean leafLike) {
+		// leafLike changes the mip chain, so two identical photos with different
+		// leaf flags are genuinely different slots and must not share one.
+		long hash = hash(photo) * 31 + (leafLike ? 1 : 0);
 		Integer existing = dedup.get(hash);
 		if (existing != null) {
 			return existing;
 		}
-		int slot = atlas.upload(photo);
+		int slot = atlas.upload(photo, leafLike);
 		if (slot == 0) {
 			if (!fullLogged) {
 				fullLogged = true;

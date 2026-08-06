@@ -73,6 +73,18 @@ public final class PhotoAtlas {
 	 * @param rgba 256 pixels, 0xRRGGBBAA per int (row-major, y*16+x).
 	 */
 	public int upload(int[] rgba) {
+		return upload(rgba, false);
+	}
+
+	/**
+	 * @param leafLike when true the mip chain is sealed and darkened: holes are
+	 *                 filled with the photo's mean colour and alpha forced opaque
+	 *                 so the fragment shader's {@code alpha < 0.5} cutout stops
+	 *                 punching through distant canopies (which shimmered as mips
+	 *                 averaged the gaps), and each level is darkened slightly so
+	 *                 a far forest reads as dense shaded mass rather than flat.
+	 */
+	public int upload(int[] rgba, boolean leafLike) {
 		ensure();
 		if (nextSlot >= maxSlots) {
 			return 0;
@@ -101,11 +113,15 @@ public final class PhotoAtlas {
 
 		int[] level = rgba;
 		int dim = SLOT_PX;
+		int leafMean = leafLike ? meanColor(rgba) : 0;
 		for (int mip = 0; mip <= MAX_MIP; mip++) {
 			uploadLevel(mip, sx >> mip, sy >> mip, dim, level);
 			if (mip < MAX_MIP) {
 				level = downsample(level, dim);
 				dim >>= 1;
+				if (leafLike) {
+					sealLeafMip(level, leafMean, mip + 1);
+				}
 			}
 		}
 
@@ -136,6 +152,48 @@ public final class PhotoAtlas {
 		scratch.flip();
 		GL33C.glTexSubImage2D(GL33C.GL_TEXTURE_2D, mip, x, y, dim, dim,
 			GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, scratch);
+	}
+
+	/** Alpha-weighted mean colour of a photo, used to fill leaf gaps at coarse mips. */
+	private static int meanColor(int[] photo) {
+		long r = 0, g = 0, b = 0, aw = 0;
+		for (int p : photo) {
+			int a = p & 0xFF;
+			r += ((p >>> 24) & 0xFF) * a;
+			g += ((p >>> 16) & 0xFF) * a;
+			b += ((p >>> 8) & 0xFF) * a;
+			aw += a;
+		}
+		if (aw == 0) {
+			return 0;
+		}
+		return (int) ((r / aw) << 24 | (g / aw) << 16 | (b / aw) << 8) | 0xFF;
+	}
+
+	/**
+	 * Fills a leaf mip's transparent texels with the photo mean and forces it
+	 * opaque, then darkens it by 0.85 per level. Distant canopies otherwise
+	 * flicker: the mip average drags alpha across the shader's 0.5 cutout and
+	 * gaps blink in and out as the LOD level changes.
+	 */
+	private static void sealLeafMip(int[] level, int mean, int mipLevel) {
+		float darken = (float) Math.pow(0.85, mipLevel);
+		int mr = (mean >>> 24) & 0xFF, mg = (mean >>> 16) & 0xFF, mb = (mean >>> 8) & 0xFF;
+		for (int i = 0; i < level.length; i++) {
+			int p = level[i];
+			int a = p & 0xFF;
+			int r = (p >>> 24) & 0xFF, g = (p >>> 16) & 0xFF, b = (p >>> 8) & 0xFF;
+			if (a < 255) {
+				// Blend toward the canopy's own average rather than toward black.
+				r = (r * a + mr * (255 - a)) / 255;
+				g = (g * a + mg * (255 - a)) / 255;
+				b = (b * a + mb * (255 - a)) / 255;
+			}
+			r = Math.min(255, (int) (r * darken));
+			g = Math.min(255, (int) (g * darken));
+			b = Math.min(255, (int) (b * darken));
+			level[i] = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+		}
 	}
 
 	/** Box-filter 2x2 downsample, alpha-weighted so transparent texels don't darken the mip. */

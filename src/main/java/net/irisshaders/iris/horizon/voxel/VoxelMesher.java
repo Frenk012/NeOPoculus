@@ -322,6 +322,7 @@ public final class VoxelMesher {
 					}
 					int biome = VoxelCell.biomeId(c);
 					int rgb = colors.colorOf(state);
+					int emission = palettes.emissionOf(state);
 
 					for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
 						int axis = FACE_AXIS[face];
@@ -334,14 +335,15 @@ public final class VoxelMesher {
 							if (!visible(palettes, c, n)) {
 								continue;
 							}
-							int bl = VoxelCell.blockLight(n);
+							int bl = Math.max(VoxelCell.blockLight(n), emission);
 							int sl = VoxelCell.skyLight(n);
 							if (!snap.neighborPresent(face) && outsideCore(x, y, z, face)) {
 								sl = 15;
 							}
 							lightMeta = (bl << 4) | sl;
 						} else {
-							lightMeta = (VoxelCell.blockLight(c) << 4) | VoxelCell.skyLight(c);
+							lightMeta = (Math.max(VoxelCell.blockLight(c), emission) << 4)
+								| VoxelCell.skyLight(c);
 						}
 						int slot = metadata.slotOf(state, biome, face);
 						if (slot == 0 && !metadata.isBaked(state, biome)) {
@@ -544,8 +546,12 @@ public final class VoxelMesher {
 				// origin cell's value — approximate across a merged plate but
 				// real (day/night, caves), unlike the old fixed-bright value.
 				faceKey[v * N + u] = c & ~LIGHT_MASK;
-				// Light from the adjacent (air/translucent) cell, vanilla-style.
-				int bl = VoxelCell.blockLight(n);
+				// Light from the adjacent (air/translucent) cell, vanilla-style,
+				// floored by the block's own emission so a glowstone or lava face
+				// reads as a light source rather than as whatever the air beside
+				// it happens to carry.
+				int bl = Math.max(VoxelCell.blockLight(n),
+					palettes.emissionOf(VoxelCell.stateId(c)));
 				int sl = VoxelCell.skyLight(n);
 				// Missing-neighbour plane (a not-yet-meshed neighbour region at
 				// the frontier): treat as open sky so the temporary boundary wall

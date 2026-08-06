@@ -204,6 +204,11 @@ rate-limited. Clients that lack the mod (or disable the feature) never see traff
    client drops it and re-requests lazily.
 5. `C→S REQUEST` — client asks for specific regions (moving into an area it lacks).
 
+> **SUPERSEDED (2026-08-07):** the "palette.nbt is sent first and merged" rule below is UNSAFE
+> and must not be implemented — `VoxelPalettes.load()` is a destructive wholesale replace and
+> ids are per-process, so adopting server ids silently reinterprets locally captured cells.
+> The contract is REMAP AT INSTALL; see [M5B-PHASE-B.md](M5B-PHASE-B.md).
+
 The client writes received payloads straight into its own `VoxelStore` (same codec, no
 re-ingest), marks the covering mesh regions dirty, and the existing scheduler meshes them —
 so **the render path needs no changes at all**. Palette ids are server-authoritative for

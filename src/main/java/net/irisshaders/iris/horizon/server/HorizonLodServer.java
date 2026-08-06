@@ -62,7 +62,24 @@ public final class HorizonLodServer {
 							IntegerArgumentType.getInteger(ctx, "blocks"), false))
 						.then(Commands.literal("generate-missing")
 							.executes(ctx -> generate(ctx.getSource(),
-								IntegerArgumentType.getInteger(ctx, "blocks"), true))))))
+								IntegerArgumentType.getInteger(ctx, "blocks"), true)))))
+				.then(Commands.literal("world")
+					.executes(ctx -> start(ctx.getSource(), src ->
+						LodGenerator.wholeWorld(src.getLevel(), engineOrNull()), "the saved world")))
+				.then(Commands.literal("region")
+					.then(Commands.argument("x1", IntegerArgumentType.integer())
+						.then(Commands.argument("z1", IntegerArgumentType.integer())
+							.then(Commands.argument("x2", IntegerArgumentType.integer())
+								.then(Commands.argument("z2", IntegerArgumentType.integer())
+									.executes(ctx -> start(ctx.getSource(), src -> LodGenerator.region(
+										src.getLevel(), engineOrNull(),
+										IntegerArgumentType.getInteger(ctx, "x1"),
+										IntegerArgumentType.getInteger(ctx, "z1"),
+										IntegerArgumentType.getInteger(ctx, "x2"),
+										IntegerArgumentType.getInteger(ctx, "z2"), false),
+										"the given region"))))))))
+			.then(Commands.literal("purge")
+				.then(Commands.literal("confirm").executes(ctx -> purge(ctx.getSource()))))
 			.then(Commands.literal("status").executes(ctx -> status(ctx.getSource())))
 			.then(Commands.literal("pause").executes(ctx -> control(ctx.getSource(), "pause")))
 			.then(Commands.literal("resume").executes(ctx -> control(ctx.getSource(), "resume")))
@@ -96,6 +113,66 @@ public final class HorizonLodServer {
 		src.sendSuccess(() -> Component.literal("Horizon: generating LOD within " + radiusBlocks
 			+ " blocks" + (generateMissing ? ", generating missing terrain" : ", existing chunks only")
 			+ " — /horizon lod status"), true);
+		return 1;
+	}
+
+	/** The live voxel engine, or null when the LOD is off or no world is loaded. */
+	private static VoxelEngine engineOrNull() {
+		VoxelEngine engine = HorizonLod.INSTANCE.voxel();
+		return engine != null && engine.isActive() ? engine : null;
+	}
+
+	/** Shared prologue for the generate variants: validate, build, announce. */
+	private static int start(CommandSourceStack src,
+							 java.util.function.Function<CommandSourceStack, LodGenerator> factory,
+							 String what) {
+		if (active != null && !active.isDone()) {
+			src.sendFailure(Component.literal("Horizon: a LOD generation is already running — /horizon lod status"));
+			return 0;
+		}
+		if (engineOrNull() == null) {
+			src.sendFailure(Component.literal(
+				"Horizon: the voxel LOD engine is not active for this world"));
+			return 0;
+		}
+		LodGenerator generator = factory.apply(src);
+		if (generator == null || generator.totalChunks() == 0) {
+			src.sendFailure(Component.literal("Horizon: nothing to generate for " + what));
+			return 0;
+		}
+		active = generator;
+		int total = generator.totalChunks();
+		Iris.logger.info("Horizon: LOD generation started over " + what + ", " + total + " chunks");
+		src.sendSuccess(() -> Component.literal("Horizon: generating LOD for " + what
+			+ " — " + total + " chunks, /horizon lod status"), true);
+		return 1;
+	}
+
+	/**
+	 * Drops every generated LOD for the current world. Destructive, so it is
+	 * spelled {@code /horizon lod purge confirm}: the data can only be rebuilt by
+	 * generating or exploring again.
+	 */
+	private static int purge(CommandSourceStack src) {
+		VoxelEngine engine = engineOrNull();
+		if (engine == null) {
+			src.sendFailure(Component.literal("Horizon: the voxel LOD engine is not active for this world"));
+			return 0;
+		}
+		if (active != null) {
+			active.cancel();
+			active = null;
+		}
+		try {
+			engine.purgeAll();
+		} catch (Throwable t) {
+			Iris.logger.error("Horizon: LOD purge failed", t);
+			src.sendFailure(Component.literal("Horizon: purge failed — see the log"));
+			return 0;
+		}
+		Iris.logger.info("Horizon: LOD purged on request");
+		src.sendSuccess(() -> Component.literal(
+			"Horizon: LOD purged for this world; it rebuilds as you generate or explore"), true);
 		return 1;
 	}
 

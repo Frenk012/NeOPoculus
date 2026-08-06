@@ -246,6 +246,39 @@ public final class VoxelEngine {
 		return true;
 	}
 
+	/**
+	 * Drops every LOD for the current world, in memory and on disk, and lets the
+	 * next capture start clean. Destructive and deliberate: the caller is the
+	 * {@code purge confirm} command.
+	 *
+	 * <p>The in-memory world is dropped FIRST so nothing is mid-write while the
+	 * files disappear, and the directory is removed rather than emptied so a
+	 * partially deleted tree cannot be mistaken for a valid cache.
+	 */
+	public void purgeAll() {
+		Path dir = null;
+		synchronized (this) {
+			if (currentWorldId != null) {
+				dir = FMLPaths.GAMEDIR.get().resolve("horizon-lod")
+					.resolve(VoxelRegionStorage.sanitizePublic(currentWorldId));
+			}
+		}
+		onLevelUnload();
+		if (dir == null || !java.nio.file.Files.isDirectory(dir)) {
+			return;
+		}
+		try (var walk = java.nio.file.Files.walk(dir)) {
+			for (Path p : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+				java.nio.file.Files.deleteIfExists(p);
+			}
+		} catch (Throwable t) {
+			Iris.logger.error("Horizon: could not delete LOD cache at " + dir, t);
+		}
+		// Forget the world id too, so the next ensureWorld reloads a fresh palette
+		// instead of keeping the one belonging to the data just deleted.
+		currentWorldId = null;
+	}
+
 	/** Ensures a store exists for this level; the generator needs one before capturing. Server or client thread. */
 	public void ensureWorldFor(net.minecraft.client.multiplayer.ClientLevel level) {
 		ensureWorld(level);

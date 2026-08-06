@@ -149,6 +149,11 @@ final class VoxelRegionStorage {
 	 * VoxelPalettes: VoxelPalettes takes a {@link Path} and stays oblivious to
 	 * the directory scheme; this class owns the scheme.
 	 */
+	/** The same name sanitisation the storage paths use; the purge command needs it to find the directory. */
+	static String sanitizePublic(String raw) {
+		return sanitize(raw);
+	}
+
 	static Path paletteFile(Path gameDir, String worldId) {
 		return gameDir.resolve("horizon-lod").resolve(sanitize(worldId)).resolve("palette.nbt");
 	}

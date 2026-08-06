@@ -84,6 +84,87 @@ public final class LodGenerator {
 	}
 
 	/**
+	 * A generator covering an explicit block rectangle, ordered nearest-first
+	 * from its centre.
+	 */
+	public static LodGenerator region(ServerLevel level, VoxelEngine engine,
+									  int x1, int z1, int x2, int z2, boolean generateMissing) {
+		int minCx = Math.min(x1, x2) >> 4;
+		int maxCx = Math.max(x1, x2) >> 4;
+		int minCz = Math.min(z1, z2) >> 4;
+		int maxCz = Math.max(z1, z2) >> 4;
+		java.util.List<ChunkPos> list = new java.util.ArrayList<>();
+		for (int cz = minCz; cz <= maxCz; cz++) {
+			for (int cx = minCx; cx <= maxCx; cx++) {
+				list.add(new ChunkPos(cx, cz));
+			}
+		}
+		int cx0 = (minCx + maxCx) / 2;
+		int cz0 = (minCz + maxCz) / 2;
+		list.sort(java.util.Comparator.comparingLong(p -> {
+			long dx = p.x - cx0;
+			long dz = p.z - cz0;
+			return dx * dx + dz * dz;
+		}));
+		return new LodGenerator(level, engine, list.toArray(new ChunkPos[0]),
+			generateMissing, DEFAULT_BUDGET_MS);
+	}
+
+	/**
+	 * A generator covering everything already saved to disk, read from the
+	 * dimension's region files. Never generates terrain: "the whole world" means
+	 * the world that exists, not an unbounded walk outward.
+	 */
+	public static LodGenerator wholeWorld(ServerLevel level, VoxelEngine engine) {
+		java.util.List<ChunkPos> list = new java.util.ArrayList<>();
+		try {
+			java.nio.file.Path dir = net.minecraft.world.level.dimension.DimensionType
+				.getStorageFolder(level.dimension(), level.getServer().getWorldPath(
+					net.minecraft.world.level.storage.LevelResource.ROOT))
+				.resolve("region");
+			if (java.nio.file.Files.isDirectory(dir)) {
+				try (var stream = java.nio.file.Files.list(dir)) {
+					for (java.nio.file.Path file : stream.toList()) {
+						int[] rc = parseRegionName(file.getFileName().toString());
+						if (rc == null) {
+							continue;
+						}
+						for (int dz = 0; dz < 32; dz++) {
+							for (int dx = 0; dx < 32; dx++) {
+								list.add(new ChunkPos((rc[0] << 5) + dx, (rc[1] << 5) + dz));
+							}
+						}
+					}
+				}
+			}
+		} catch (Throwable t) {
+			Iris.logger.error("Horizon: could not enumerate region files for whole-world LOD generation", t);
+		}
+		return new LodGenerator(level, engine, list.toArray(new ChunkPos[0]), false, DEFAULT_BUDGET_MS);
+	}
+
+	/** {@code r.<x>.<z>.mca} -> {x, z}, or null when the name is not a region file. */
+	private static int[] parseRegionName(String name) {
+		if (!name.startsWith("r.") || !name.endsWith(".mca")) {
+			return null;
+		}
+		String[] parts = name.substring(2, name.length() - 4).split("\\.");
+		if (parts.length != 2) {
+			return null;
+		}
+		try {
+			return new int[]{Integer.parseInt(parts[0]), Integer.parseInt(parts[1])};
+		} catch (NumberFormatException e) {
+			return null;
+		}
+	}
+
+	/** Chunks this generator will visit; the command reports it before starting. */
+	public int totalChunks() {
+		return work.length;
+	}
+
+	/**
 	 * Does up to one tick's worth of work. Server thread.
 	 *
 	 * @return true while there is still work left.

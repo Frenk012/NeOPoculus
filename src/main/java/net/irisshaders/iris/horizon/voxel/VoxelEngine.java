@@ -465,7 +465,12 @@ public final class VoxelEngine {
 	private static String resolveWorldId() {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.getSingleplayerServer() != null) {
-			return "local_" + mc.getSingleplayerServer().getWorldData().getLevelName();
+			// The SAVE FOLDER, not the display name: every new singleplayer world
+			// is called "New World" by default, so keying on the display name made
+			// separate worlds share one LOD cache and one palette — a world showed
+			// the previous world's terrain, and its cells were read through the
+			// wrong palette. Folder names are unique on disk by construction.
+			return "local_" + singleplayerFolderName(mc);
 		}
 		if (mc.getCurrentServer() != null) {
 			return "server_" + mc.getCurrentServer().ip;
@@ -475,6 +480,23 @@ public final class VoxelEngine {
 			return "remote_" + mc.getConnection().getConnection().getRemoteAddress();
 		}
 		return "unknown";
+	}
+
+	/**
+	 * The singleplayer save's folder name, which is unique on disk, falling back
+	 * to the display name if the path cannot be read for any reason.
+	 */
+	public static String singleplayerFolderName(Minecraft mc) {
+		try {
+			java.nio.file.Path root = mc.getSingleplayerServer()
+				.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT);
+			java.nio.file.Path name = root.toAbsolutePath().normalize().getFileName();
+			if (name != null && !name.toString().isBlank()) {
+				return name.toString();
+			}
+		} catch (Throwable ignored) {
+		}
+		return mc.getSingleplayerServer().getWorldData().getLevelName();
 	}
 
 	private void drainSnapshots(VoxelStore s) {

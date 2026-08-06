@@ -314,7 +314,10 @@ public final class HorizonLod {
 			Minecraft mc = Minecraft.getInstance();
 			String worldId;
 			if (mc.getSingleplayerServer() != null) {
-				worldId = "local_" + mc.getSingleplayerServer().getWorldData().getLevelName();
+				// Save folder, not display name — see VoxelEngine.resolveWorldId:
+				// every world defaults to "New World", so the display name made
+				// separate worlds share one LOD cache.
+				worldId = "local_" + net.irisshaders.iris.horizon.voxel.VoxelEngine.singleplayerFolderName(mc);
 			} else if (mc.getCurrentServer() != null) {
 				worldId = "server_" + mc.getCurrentServer().ip;
 			} else if (mc.getConnection() != null && mc.getConnection().getConnection() != null

@@ -103,6 +103,17 @@ public class Iris {
 			modEventBus.addListener(this::onKeyRegister);
 			NeoForge.EVENT_BUS.addListener(this::onKeyInput);
 
+			// Registered here, in the mod constructor, because this is the only
+			// entry point that runs on BOTH dists: the client path goes through
+			// MixinOptions_Entrypoint, which lives in the mixin config's "client"
+			// array, so a dedicated server never reached it and /horizon lod did
+			// not exist there at all.
+			// Call the server registrar DIRECTLY, never through HorizonLod: that
+			// class holds Minecraft/ClientLevel/RenderSystem references, and
+			// touching it on a dedicated server would drag client classes into a
+			// JVM that does not have them.
+			net.irisshaders.iris.horizon.server.HorizonLodServer.register();
+
 			if (FMLLoader.getDist().isClient()) {
 				modEventBus.addListener((net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent event) ->
 					event.registerReloadListener((net.minecraft.server.packs.resources.ResourceManagerReloadListener)
@@ -754,10 +765,6 @@ public class Iris {
 		DHCompat.run();
 
 		net.irisshaders.iris.horizon.HorizonLod.init();
-		// Phase A registers the LOD generation commands from the client entry
-		// point because the integrated server lives in this same process; phase B
-		// moves this to the mod constructor so a dedicated server gets it too.
-		net.irisshaders.iris.horizon.HorizonLod.initServer();
 
 		try {
 			if (!Files.exists(getShaderpacksDirectory())) {

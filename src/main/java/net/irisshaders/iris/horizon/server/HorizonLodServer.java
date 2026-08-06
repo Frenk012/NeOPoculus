@@ -36,7 +36,13 @@ public final class HorizonLodServer {
 	private HorizonLodServer() {
 	}
 
+	private static boolean registered;
+
 	public static void register() {
+		if (registered) {
+			return;
+		}
+		registered = true;
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
 			RegisterCommandsEvent.class, HorizonLodServer::onRegisterCommands);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,

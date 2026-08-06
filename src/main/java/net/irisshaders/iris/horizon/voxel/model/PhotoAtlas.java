@@ -177,7 +177,13 @@ public final class PhotoAtlas {
 	 * gaps blink in and out as the LOD level changes.
 	 */
 	private static void sealLeafMip(int[] level, int mean, int mipLevel) {
-		float darken = (float) Math.pow(0.85, mipLevel);
+		// design-bakery-atlas.md specifies LEAF_MIP_DARKEN = 0.85 per level as a
+		// LINEAR-space multiply. Applying it straight to sRGB bytes (the first
+		// version of this) darkened far foliage roughly 40% too much and made
+		// canopies read as black patches against everything around them. For a
+		// pure scalar the conversion is exact: scaling linear by k is the same as
+		// scaling sRGB by k^(1/2.2).
+		float darken = (float) Math.pow(0.85, mipLevel / 2.2);
 		int mr = (mean >>> 24) & 0xFF, mg = (mean >>> 16) & 0xFF, mb = (mean >>> 8) & 0xFF;
 		for (int i = 0; i < level.length; i++) {
 			int p = level[i];

@@ -54,7 +54,10 @@ public final class HorizonLodServer {
 
 	private static void onRegisterCommands(RegisterCommandsEvent event) {
 		LiteralArgumentBuilder<CommandSourceStack> lod = Commands.literal("lod")
-			.requires(src -> src.hasPermission(2))
+			// Level 4 (owner/console), not the usual 2: these commands can make a
+			// server generate millions of chunks or delete an entire LOD cache,
+			// which is not moderator-grade authority.
+			.requires(src -> src.hasPermission(4))
 			.then(Commands.literal("generate")
 				.then(Commands.literal("radius")
 					.then(Commands.argument("blocks", IntegerArgumentType.integer(16, 16384))

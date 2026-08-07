@@ -39,6 +39,17 @@ public final class ClientLodInstall {
 	private static volatile java.util.function.BiConsumer<Integer, Integer> budgetListener = (used, limit) -> {
 	};
 
+	/**
+	 * Frees disk when the budget is hit, returning the bytes reclaimed. Set by
+	 * the client, which is the side that knows where the player is — distance is
+	 * what decides which regions go.
+	 */
+	private static volatile java.util.function.LongUnaryOperator cleanupListener = budget -> 0L;
+
+	public static void onCleanupNeeded(java.util.function.LongUnaryOperator listener) {
+		cleanupListener = listener == null ? budget -> 0L : listener;
+	}
+
 	public static void onBudgetReached(java.util.function.BiConsumer<Integer, Integer> listener) {
 		budgetListener = listener == null ? (used, limit) -> {
 		} : listener;
@@ -166,6 +177,18 @@ public final class ClientLodInstall {
 		long budgetBytes = (long) net.irisshaders.iris.horizon.HorizonConfig.get()
 			.getServerLodDiskBudgetMb() * 1024L * 1024L;
 		if (installedSections >= MAX_SECTIONS_PER_SESSION || installedBytes >= budgetBytes) {
+			// Auto-clean: make room by dropping the farthest cached regions and
+			// carry on, instead of refusing everything for the rest of the
+			// session. The counter is reduced by what was freed so the budget
+			// keeps meaning "bytes currently held", not "bytes ever accepted".
+			if (net.irisshaders.iris.horizon.HorizonConfig.get().isLodAutoClean()) {
+				long freed = cleanupListener.applyAsLong(budgetBytes);
+				if (freed > 0) {
+					installedBytes = Math.max(0L, installedBytes - freed);
+					capReported = false;
+					return install(store, sectionKey, encoded);
+				}
+			}
 			if (!capReported) {
 				capReported = true;
 				int mb = (int) (installedBytes >> 20);

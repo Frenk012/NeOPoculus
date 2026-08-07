@@ -114,6 +114,29 @@ public final class HorizonLod {
 		// Tell the player when the server-LOD disk budget runs out. Without this
 		// the only symptom is distant terrain quietly refusing to fill in, which
 		// is impossible to attribute to a budget.
+		// Auto-clean: drop the farthest cached regions to make room. Distance is
+		// measured from where the player is at that moment, which is why this
+		// lives here and not in the installer.
+		net.irisshaders.iris.horizon.voxel.ClientLodInstall.onCleanupNeeded(budgetBytes -> {
+			var mc = Minecraft.getInstance();
+			var player = mc.player;
+			java.nio.file.Path root = INSTANCE.voxelEngine.lodRootForCurrentWorld();
+			if (player == null || root == null) {
+				return 0L;
+			}
+			var result = net.irisshaders.iris.horizon.voxel.LodCacheCleaner.cleanFarthest(
+				root, player.getBlockX(), player.getBlockZ(), budgetBytes);
+			if (result.filesDeleted() > 0) {
+				mc.execute(() -> {
+					if (mc.player != null) {
+						mc.player.displayClientMessage(net.minecraft.network.chat.Component.literal(
+							"§eHorizon: §ffreed " + (result.bytesFreed() >> 20) + " MB of distant LOD cache ("
+								+ result.filesDeleted() + " regions) to stay within the disk budget."), true);
+					}
+				});
+			}
+			return result.bytesFreed();
+		});
 		net.irisshaders.iris.horizon.voxel.ClientLodInstall.onBudgetReached((usedMb, limitMb) ->
 			Minecraft.getInstance().execute(() -> {
 				var player = Minecraft.getInstance().player;
@@ -127,6 +150,29 @@ public final class HorizonLod {
 		Iris.logger.info("Horizon extended LOD system initialized");
 	}
 
+
+	/**
+	 * Deletes this world's entire LOD cache, in memory and on disk, and reports
+	 * how much was freed. Triggered from the settings screen by two deliberate
+	 * ticks; the data can only come back by exploring or generating again.
+	 */
+	public void clearLodCache() {
+		java.nio.file.Path root = voxelEngine.lodRootForCurrentWorld();
+		voxelEngine.purgeAll();
+		RenderSystem.recordRenderCall(voxelRenderer::clear);
+		emptyVoxelRegions.clear();
+		long freed = root == null ? 0
+			: net.irisshaders.iris.horizon.voxel.LodCacheCleaner.purge(root);
+		Iris.logger.info("Horizon: LOD cache cleared (" + (freed >> 20) + " MB freed)");
+		Minecraft mc = Minecraft.getInstance();
+		mc.execute(() -> {
+			if (mc.player != null) {
+				mc.player.displayClientMessage(net.minecraft.network.chat.Component.literal(
+					"§eHorizon: §fLOD cache cleared — " + (freed >> 20)
+						+ " MB freed. It rebuilds as you explore."), false);
+			}
+		});
+	}
 
 	/** Voxel-engine orchestrator; the block-update mixin and the GUI reach it here. */
 	public VoxelEngine voxel() {

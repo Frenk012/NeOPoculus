@@ -84,6 +84,16 @@ public class HorizonConfig {
 	 * pre-generated server lands near 900 MB.
 	 */
 	private int serverLodDiskBudgetMb = 2048;
+	/**
+	 * Delete the farthest cached LOD regions when the disk budget is reached,
+	 * instead of refusing to store more. Off by default: silently deleting a
+	 * player's cached terrain should be something they asked for.
+	 */
+	private boolean lodAutoClean = false;
+	/** Armed state of the GUI's cache-clear action; paired with {@link #lodClearConfirm}. */
+	private boolean lodClearArmed = false;
+	/** Second half of the GUI's cache-clear action; both must be on for it to run. */
+	private boolean lodClearConfirm = false;
 
 	private HorizonConfig() {
 		load();
@@ -121,6 +131,7 @@ public class HorizonConfig {
 		maxLodVramMb = clamp(parseInt(props, "maxLodVramMb", maxLodVramMb), 128, 4096);
 		maxUploadBytesPerFrame = clamp(parseInt(props, "maxUploadBytesPerFrame", maxUploadBytesPerFrame), 1 << 20, 64 << 20);
 		serverLodDiskBudgetMb = clamp(parseInt(props, "serverLodDiskBudgetMb", serverLodDiskBudgetMb), 64, 65536);
+		lodAutoClean = Boolean.parseBoolean(props.getProperty("lodAutoClean", Boolean.toString(lodAutoClean)));
 
 		if (!Files.exists(file)) {
 			save();
@@ -140,6 +151,7 @@ public class HorizonConfig {
 		props.setProperty("engine", voxelEngine ? "voxel" : "classic");
 		props.setProperty("voxelMemoryBudgetMb", Integer.toString(voxelMemoryBudgetMb));
 		props.setProperty("serverLodDiskBudgetMb", Integer.toString(serverLodDiskBudgetMb));
+		props.setProperty("lodAutoClean", Boolean.toString(lodAutoClean));
 		props.setProperty("maxLodVramMb", Integer.toString(maxLodVramMb));
 		props.setProperty("maxUploadBytesPerFrame", Integer.toString(maxUploadBytesPerFrame));
 
@@ -257,6 +269,30 @@ public class HorizonConfig {
 
 	public void setServerLodDiskBudgetMb(int value) {
 		this.serverLodDiskBudgetMb = clamp(value, 64, 65536);
+	}
+
+	public boolean isLodAutoClean() {
+		return lodAutoClean;
+	}
+
+	public void setLodAutoClean(boolean value) {
+		this.lodAutoClean = value;
+	}
+
+	public boolean isLodClearArmed() {
+		return lodClearArmed;
+	}
+
+	public void setLodClearArmed(boolean value) {
+		this.lodClearArmed = value;
+	}
+
+	public boolean isLodClearConfirm() {
+		return lodClearConfirm;
+	}
+
+	public void setLodClearConfirm(boolean value) {
+		this.lodClearConfirm = value;
 	}
 
 	public int getMaxLodVramMb() {

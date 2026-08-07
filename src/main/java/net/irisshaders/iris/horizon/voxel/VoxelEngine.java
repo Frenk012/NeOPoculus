@@ -255,6 +255,16 @@ public final class VoxelEngine {
 	 * files disappear, and the directory is removed rather than emptied so a
 	 * partially deleted tree cannot be mistaken for a valid cache.
 	 */
+	/** This world's LOD directory, or null when no world is loaded. */
+	public Path lodRootForCurrentWorld() {
+		String id = currentWorldId;
+		if (id == null) {
+			return null;
+		}
+		return FMLPaths.GAMEDIR.get().resolve("horizon-lod")
+			.resolve(VoxelRegionStorage.sanitizePublic(id));
+	}
+
 	public void purgeAll() {
 		Path dir = null;
 		synchronized (this) {

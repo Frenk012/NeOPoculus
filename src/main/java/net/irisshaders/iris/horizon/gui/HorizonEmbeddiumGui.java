@@ -134,6 +134,35 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.LOW)
 			.build();
 
+		Option<Boolean> autoClean = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/lod_auto_clean"))
+			.setName(name("lodAutoClean"))
+			.setTooltip(tooltip("lodAutoClean"))
+			.setControl(TickBoxControl::new)
+			.setBinding(new GenericBinding<>(HorizonConfig::setLodAutoClean, HorizonConfig::isLodAutoClean))
+			.setImpact(OptionImpact.LOW)
+			.build();
+
+		// Deleting a cache is not undoable, so it takes two deliberate ticks:
+		// arming alone does nothing, and both are cleared again after it runs.
+		Option<Boolean> clearArmed = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/lod_clear"))
+			.setName(name("lodClear"))
+			.setTooltip(tooltip("lodClear"))
+			.setControl(TickBoxControl::new)
+			.setBinding(new GenericBinding<>(HorizonConfig::setLodClearArmed, HorizonConfig::isLodClearArmed))
+			.setImpact(OptionImpact.LOW)
+			.build();
+
+		Option<Boolean> clearConfirm = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/lod_clear_confirm"))
+			.setName(name("lodClearConfirm"))
+			.setTooltip(tooltip("lodClearConfirm"))
+			.setControl(TickBoxControl::new)
+			.setBinding(new GenericBinding<>(HorizonConfig::setLodClearConfirm, HorizonConfig::isLodClearConfirm))
+			.setImpact(OptionImpact.LOW)
+			.build();
+
 		OptionGroup main = OptionGroup.createBuilder()
 			.setId(OptionIdentifier.create(id("horizon/main")))
 			.add(enabled)
@@ -154,6 +183,9 @@ public class HorizonEmbeddiumGui {
 			.add(workerThreads)
 			.add(saveInterval)
 			.add(serverLodDisk)
+			.add(autoClean)
+			.add(clearArmed)
+			.add(clearConfirm)
 			.build();
 
 		event.addPage(new OptionPage(OptionIdentifier.create(id("horizon")),

@@ -322,10 +322,7 @@ public final class VoxelRenderer {
 				GlStateManager._enableDepthTest();
 				GlStateManager._depthFunc(GL33C.GL_LEQUAL);
 				GlStateManager._depthMask(true);
-				// Forced, not GlStateManager: while the pack's blend override is
-				// locked, Iris cancels _disableBlend outright, and opaque LOD drawn
-				// under the pack's blend mode simply blends away to nothing.
-				net.irisshaders.iris.horizon.HorizonGlState.forceBlend(false);
+				GlStateManager._disableBlend();
 				GlStateManager._disableCull(); // winding is not outward-consistent yet
 				GlStateManager._enablePolygonOffset();
 				// Same trick as the no-pack pass: push LOD fragments back so loaded
@@ -378,6 +375,9 @@ public final class VoxelRenderer {
 				// every blend change the pack makes afterwards is swallowed. This
 				// runs even when a draw threw, because a half-finished pass is
 				// exactly when leaving the state dirty does the most damage.
+				if (lastBound != null) {
+					lastBound.unbind();
+				}
 				GlStateManager._polygonOffset(0.0f, 0.0f);
 				GlStateManager._disablePolygonOffset();
 				if (prevDepthTest) {
@@ -387,11 +387,10 @@ public final class VoxelRenderer {
 				}
 				GlStateManager._depthFunc(prevDepthFunc);
 				GlStateManager._depthMask(prevDepthMask);
-				// Undo the forced blend before unbind(), so the pack's override —
-				// restored by unbind() — has the last word rather than fighting us.
-				net.irisshaders.iris.horizon.HorizonGlState.forceBlend(prevBlend);
-				if (lastBound != null) {
-					lastBound.unbind();
+				if (prevBlend) {
+					GlStateManager._enableBlend();
+				} else {
+					GlStateManager._disableBlend();
 				}
 				if (prevCull) {
 					GlStateManager._enableCull();
@@ -537,8 +536,8 @@ public final class VoxelRenderer {
 		// the atlas, Iris's own bindTextureToUnit then skips the rebind as
 		// redundant and the atlas never comes back. That is the permanent black
 		// terrain, and it reaches loaded chunks because unit 0 is shared.
-		int prevActiveUnit = net.irisshaders.iris.horizon.HorizonGlState.activeUnit();
-		int prevTex0 = net.irisshaders.iris.horizon.HorizonGlState.boundTexture(0);
+		int prevActiveUnit = GlStateManagerAccessor.getActiveTexture();
+		int prevTex0 = GlStateManagerAccessor.getTEXTURES()[0].binding;
 		GlStateManager.DepthState depthState = GlStateManagerAccessor.getDEPTH();
 		boolean prevDepthTest = ((BooleanStateAccessor) depthState.mode).isEnabled();
 		int prevDepthFunc = depthState.func;
@@ -549,7 +548,7 @@ public final class VoxelRenderer {
 		GlStateManager._enableDepthTest();
 		GlStateManager._depthFunc(GL33C.GL_LEQUAL);
 		GlStateManager._depthMask(true);
-		net.irisshaders.iris.horizon.HorizonGlState.forceBlend(false);
+		GlStateManager._disableBlend();
 		GlStateManager._disableCull(); // M3: two-sided until winding is verified
 		GlStateManager._enablePolygonOffset();
 		GlStateManager._polygonOffset(3.0f, 3.0f);
@@ -574,11 +573,13 @@ public final class VoxelRenderer {
 			}
 		}
 
-		int prevTex1 = net.irisshaders.iris.horizon.HorizonGlState.boundTexture(1);
-		net.irisshaders.iris.horizon.HorizonGlState.forceBindTexture(0, maskTexture);
+		GlStateManager._activeTexture(GL33C.GL_TEXTURE0);
+		GlStateManager._bindTexture(maskTexture);
+		int prevTex1 = GlStateManagerAccessor.getTEXTURES()[1].binding;
 		if (bakery.atlasTexture() != 0) {
-			net.irisshaders.iris.horizon.HorizonGlState.forceBindTexture(1, bakery.atlasTexture());
-			net.irisshaders.iris.horizon.HorizonGlState.forceActiveUnit(0);
+			GlStateManager._activeTexture(GL33C.GL_TEXTURE1);
+			GlStateManager._bindTexture(bakery.atlasTexture());
+			GlStateManager._activeTexture(GL33C.GL_TEXTURE0);
 		}
 		shader.bind();
 		shader.setFrame(mvpArray, fogColor, fogStart, fogEnd, skyFactor);
@@ -640,12 +641,18 @@ public final class VoxelRenderer {
 		} else {
 			GlStateManager._disableCull();
 		}
-		net.irisshaders.iris.horizon.HorizonGlState.forceBlend(prevBlend);
-		if (bakery.atlasTexture() != 0) {
-			net.irisshaders.iris.horizon.HorizonGlState.forceBindTexture(1, prevTex1);
+		if (prevBlend) {
+			GlStateManager._enableBlend();
+		} else {
+			GlStateManager._disableBlend();
 		}
-		net.irisshaders.iris.horizon.HorizonGlState.forceBindTexture(0, prevTex0);
-		net.irisshaders.iris.horizon.HorizonGlState.forceActiveUnit(prevActiveUnit);
+		if (bakery.atlasTexture() != 0) {
+			GlStateManager._activeTexture(GL33C.GL_TEXTURE1);
+			GlStateManager._bindTexture(prevTex1);
+		}
+		GlStateManager._activeTexture(GL33C.GL_TEXTURE0);
+		GlStateManager._bindTexture(prevTex0);
+		GlStateManager._activeTexture(GL33C.GL_TEXTURE0 + prevActiveUnit);
 		GL33C.glBindVertexArray(prevVao);
 		GL33C.glBindBuffer(GL33C.GL_ARRAY_BUFFER, prevArrayBuffer);
 		GL33C.glUseProgram(prevProgram);

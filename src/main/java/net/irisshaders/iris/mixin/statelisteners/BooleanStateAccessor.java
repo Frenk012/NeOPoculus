@@ -8,7 +8,4 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 public interface BooleanStateAccessor {
 	@Accessor("enabled")
 	boolean isEnabled();
-
-	@Accessor("enabled")
-	void setEnabled(boolean enabled);
 }

@@ -244,7 +244,8 @@ public class HorizonIrisProgram {
 			// can do anything at all. A -1 means the pack never uses that uniform,
 			// so setting it is a no-op no matter how right the value is.
 			net.irisshaders.iris.Iris.logger.info("Horizon terrain program '" + name + "': "
-				+ "atlasParams=" + atlasParamsUniform + " far=" + farUniform
+				+ "atlasParams=" + atlasParamsUniform + " alphaTest=" + alphaTestUniform
+				+ " far=" + farUniform
 				+ " fogStart=" + fogStartUniform + " fogEnd=" + fogEndUniform
 				+ " iris_FogStart=" + irisFogStartUniform + " iris_FogEnd=" + irisFogEndUniform
 				+ " | samplers: " + terrainProbe);
@@ -304,6 +305,13 @@ public class HorizonIrisProgram {
 		String tessEval = transformed.get(PatchShaderType.TESS_EVAL);
 		String geometry = transformed.get(PatchShaderType.GEOMETRY);
 		String fragment = transformed.get(PatchShaderType.FRAGMENT);
+		if (terrainMode) {
+			// Written unconditionally, not through ShaderPrinter, which stayed
+			// silent here. The patched source is the only ground truth for what a
+			// pack's terrain program actually became; without it every question
+			// about the result is guesswork.
+			dumpPatched(name, vertex, fragment);
+		}
 		ShaderPrinter.printProgram(name)
 			.addSources(transformed)
 			.setName("horizon_" + name)
@@ -343,6 +351,19 @@ public class HorizonIrisProgram {
 			matrix.get(buffer);
 			buffer.rewind();
 			RenderSystem.glUniformMatrix3(index, false, buffer);
+		}
+	}
+
+	private static void dumpPatched(String name, String vertex, String fragment) {
+		try {
+			java.nio.file.Path dir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get()
+				.resolve("horizon-patched");
+			java.nio.file.Files.createDirectories(dir);
+			String pack = net.irisshaders.iris.Iris.getCurrentPackName().replaceAll("[^A-Za-z0-9._-]", "_");
+			java.nio.file.Files.writeString(dir.resolve(pack + "-" + name + ".vsh"), vertex);
+			java.nio.file.Files.writeString(dir.resolve(pack + "-" + name + ".fsh"), fragment);
+		} catch (Throwable t) {
+			net.irisshaders.iris.Iris.logger.warn("Horizon: could not dump the patched terrain source", t);
 		}
 	}
 

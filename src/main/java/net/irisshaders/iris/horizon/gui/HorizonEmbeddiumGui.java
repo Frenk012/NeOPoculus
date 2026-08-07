@@ -134,6 +134,20 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.LOW)
 			.build();
 
+		// Real block textures on distant terrain, at the cost of the pack's own
+		// distant-terrain handling. Off by default: a pack that ships a dh program
+		// has tuned its LOD fog and material branches for it, and that integration
+		// is worth more than texture detail to most players.
+		Option<Boolean> texturedLod = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/textured_lod_under_shaders"))
+			.setName(name("texturedLodUnderShaders"))
+			.setTooltip(tooltip("texturedLodUnderShaders"))
+			.setControl(TickBoxControl::new)
+			.setBinding(new GenericBinding<>(HorizonConfig::setTexturedLodUnderShaders,
+				HorizonConfig::isTexturedLodUnderShaders))
+			.setImpact(OptionImpact.MEDIUM)
+			.build();
+
 		Option<Boolean> autoClean = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
 			.setId(id("horizon/lod_auto_clean"))
 			.setName(name("lodAutoClean"))
@@ -183,6 +197,7 @@ public class HorizonEmbeddiumGui {
 			.add(workerThreads)
 			.add(saveInterval)
 			.add(serverLodDisk)
+			.add(texturedLod)
 			.add(autoClean)
 			.add(clearArmed)
 			.add(clearConfirm)

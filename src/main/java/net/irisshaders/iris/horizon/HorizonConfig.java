@@ -90,6 +90,15 @@ public class HorizonConfig {
 	 * player's cached terrain should be something they asked for.
 	 */
 	private boolean lodAutoClean = false;
+	/**
+	 * Draw distant terrain through the pack's own gbuffers_terrain even when it
+	 * ships a dh program. A dh program is vertex-coloured by design and never
+	 * samples a texture, so its LOD is flat colour per quad; the terrain program
+	 * samples our photo atlas and shows real block textures. The trade is the
+	 * pack's dedicated distant-terrain handling — its own LOD fog and its
+	 * dhMaterialId branches — which only the dh program has.
+	 */
+	private boolean texturedLodUnderShaders = false;
 	/** Armed state of the GUI's cache-clear action; paired with {@link #lodClearConfirm}. */
 	private boolean lodClearArmed = false;
 	/** Second half of the GUI's cache-clear action; both must be on for it to run. */
@@ -132,6 +141,7 @@ public class HorizonConfig {
 		maxUploadBytesPerFrame = clamp(parseInt(props, "maxUploadBytesPerFrame", maxUploadBytesPerFrame), 1 << 20, 64 << 20);
 		serverLodDiskBudgetMb = clamp(parseInt(props, "serverLodDiskBudgetMb", serverLodDiskBudgetMb), 64, 65536);
 		lodAutoClean = Boolean.parseBoolean(props.getProperty("lodAutoClean", Boolean.toString(lodAutoClean)));
+		texturedLodUnderShaders = Boolean.parseBoolean(props.getProperty("texturedLodUnderShaders", Boolean.toString(texturedLodUnderShaders)));
 
 		if (!Files.exists(file)) {
 			save();
@@ -152,6 +162,7 @@ public class HorizonConfig {
 		props.setProperty("voxelMemoryBudgetMb", Integer.toString(voxelMemoryBudgetMb));
 		props.setProperty("serverLodDiskBudgetMb", Integer.toString(serverLodDiskBudgetMb));
 		props.setProperty("lodAutoClean", Boolean.toString(lodAutoClean));
+		props.setProperty("texturedLodUnderShaders", Boolean.toString(texturedLodUnderShaders));
 		props.setProperty("maxLodVramMb", Integer.toString(maxLodVramMb));
 		props.setProperty("maxUploadBytesPerFrame", Integer.toString(maxUploadBytesPerFrame));
 
@@ -269,6 +280,14 @@ public class HorizonConfig {
 
 	public void setServerLodDiskBudgetMb(int value) {
 		this.serverLodDiskBudgetMb = clamp(value, 64, 65536);
+	}
+
+	public boolean isTexturedLodUnderShaders() {
+		return texturedLodUnderShaders;
+	}
+
+	public void setTexturedLodUnderShaders(boolean value) {
+		this.texturedLodUnderShaders = value;
 	}
 
 	public boolean isLodAutoClean() {

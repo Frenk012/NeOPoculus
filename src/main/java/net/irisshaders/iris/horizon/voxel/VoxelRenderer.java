@@ -256,7 +256,12 @@ public final class VoxelRenderer {
 			// all. Every pack has a terrain program, so this is one path rather
 			// than a per-pack workaround.
 			var dh = pipeline.getDHTerrainShader();
-			boolean terrainMode = dh.isEmpty();
+			// Forced when the player asks for textured LOD: a dh program is
+			// vertex-coloured by design and never samples a texture, so its LOD is
+			// flat colour per quad no matter what we feed it. Only the pack's own
+			// terrain program samples our photo atlas.
+			boolean terrainMode = dh.isEmpty()
+				|| HorizonConfig.get().isTexturedLodUnderShaders();
 			// Tells the shared uniforms which view distance this pack should be
 			// given: a dh-aware pack needs the vanilla one, a dh-unaware pack needs
 			// the distance actually being drawn or its fog swallows the LOD.

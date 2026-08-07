@@ -281,8 +281,13 @@ public class HorizonIrisProgram {
 		setUniform(clipDistanceUniform, 0.0f);
 
 		samplers.update();
-		uniforms.update();
-		customUniforms.push(this);
+		HorizonRuntime.beginLodUniformUpload();
+		try {
+			uniforms.update();
+			customUniforms.push(this);
+		} finally {
+			HorizonRuntime.endLodUniformUpload();
+		}
 		images.update();
 	}
 

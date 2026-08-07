@@ -35,6 +35,13 @@ public class CameraUniforms {
 	}
 
 	private static int getRenderDistanceInBlocks() {
+		// While the Horizon LOD pass uploads its uniforms, report the distance it
+		// actually draws to. Packs fog their LOD against `far`, so handing them
+		// the vanilla render distance fogs terrain ten times further out into a
+		// solid wall — which is exactly how several packs rendered the LOD.
+		if (net.irisshaders.iris.horizon.HorizonRuntime.isUploadingLodUniforms()) {
+			return (int) net.irisshaders.iris.horizon.HorizonRuntime.farPlane();
+		}
 		// TODO: Should we ask the game renderer for this?
 		return client.options.getEffectiveRenderDistance() * 16;
 	}

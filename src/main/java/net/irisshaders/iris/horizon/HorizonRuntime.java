@@ -29,6 +29,29 @@ public final class HorizonRuntime {
 		return HorizonConfig.get().isEnabled();
 	}
 
+	/**
+	 * True only while the Horizon LOD pass is uploading its uniforms. Packs
+	 * compute their LOD fog from {@code far}, the vanilla render distance, so
+	 * with the real value the LOD — ten times further out — is fogged solid.
+	 * While this is set, {@code far} reports the LOD distance instead, so the
+	 * pack fogs against the world it is actually being asked to draw. Scoped to
+	 * the upload rather than set globally: every other program must keep seeing
+	 * the true render distance.
+	 */
+	private static boolean uploadingLodUniforms;
+
+	public static void beginLodUniformUpload() {
+		uploadingLodUniforms = true;
+	}
+
+	public static void endLodUniformUpload() {
+		uploadingLodUniforms = false;
+	}
+
+	public static boolean isUploadingLodUniforms() {
+		return uploadingLodUniforms;
+	}
+
 	/** Far clip distance (blocks) Horizon draws LODs to. */
 	public static float farPlane() {
 		return Math.max(64.0f, HorizonConfig.get().getLodDistanceBlocks());

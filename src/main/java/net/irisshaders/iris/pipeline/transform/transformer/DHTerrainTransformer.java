@@ -56,6 +56,22 @@ public class DHTerrainTransformer {
 			CommonTransformer.replaceGlMultiTexCoordBounded(t, root, 4, 7);
 		}
 
+		if (textured && parameters.type.glShaderType == ShaderType.VERTEX) {
+			// A terrain program identifies blocks through mc_Entity.x, matching it
+			// against the ids the pack declares in block.properties — Aurora tests
+			// for 10000, 10004, 10008 and so on. Handing it a constant meant no
+			// branch ever matched and foliage was shaded as plain terrain, which is
+			// what left Aurora's tree canopies the wrong colour.
+			//
+			// The mesher already writes a category per quad (leaves, water, lava,
+			// emissive), so the vertex shader looks the pack's own id up from a
+			// small uniform table indexed by that category. A vec4 replacement is
+			// deliberate: it is legal under every swizzle a pack might use,
+			// including the .w that breaks a narrower substitution.
+			root.replaceReferenceExpressions(t, "mc_Entity",
+				"vec4(_horizon_entity, -1.0, 0.0, 1.0)");
+		}
+
 		root.rename("gl_Color", "_vert_color");
 
 		if (parameters.type.glShaderType == ShaderType.VERTEX) {
@@ -212,7 +228,12 @@ public class DHTerrainTransformer {
 	private static void injectAtlasUv(ASTParser t, TranslationUnit tree, Root root) {
 		tree.parseAndInjectNodes(t, ASTInjectionPoint.BEFORE_FUNCTIONS,
 			"vec2 _horizon_uv;",
+			"float _horizon_entity;",
+			// 16 entries: the material byte the mesher writes is a small enum, and
+			// the clamp keeps a malformed one from reading past the array.
+			"uniform float horizon_entityIds[16];",
 			"void _horizon_uv_init() {" +
+				"    _horizon_entity = horizon_entityIds[irisExtra.x < 16u ? irisExtra.x : 0u];\n" +
 				"    float spr = max(horizon_atlasParams.x, 1.0);\n" +
 				"    float sz = horizon_atlasParams.y;\n" +
 				"    float slot = float(irisTexInfo.x);\n" +

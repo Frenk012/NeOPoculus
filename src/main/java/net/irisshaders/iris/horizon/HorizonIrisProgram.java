@@ -67,6 +67,7 @@ public class HorizonIrisProgram {
 	private final boolean terrainMode;
 	private final String terrainProbe;
 	public final int atlasParamsUniform;
+	public final int entityIdsUniform;
 	public final int alphaTestUniform;
 	public final int fogStartUniform;
 	public final int fogEndUniform;
@@ -226,6 +227,7 @@ public class HorizonIrisProgram {
 		images = builder.build();
 
 		atlasParamsUniform = tryGetUniformLocation2("horizon_atlasParams");
+		entityIdsUniform = tryGetUniformLocation2("horizon_entityIds");
 		alphaTestUniform = tryGetUniformLocation2("iris_currentAlphaTest");
 		fogStartUniform = tryGetUniformLocation2("fogStart");
 		fogEndUniform = tryGetUniformLocation2("fogEnd");
@@ -414,6 +416,19 @@ public class HorizonIrisProgram {
 		// what the rest of the frame is sampling.
 		GL43C.glBindTexture(GL43C.GL_TEXTURE_2D, prev);
 		return tex;
+	}
+
+	/**
+	 * The pack's own block ids for each material category the mesher writes, so a
+	 * terrain program can recognise foliage, water and light sources the way it
+	 * does for real blocks. Resolved per pack, since block.properties is what
+	 * decides the numbers.
+	 */
+	public void setEntityIds(float[] ids) {
+		if (entityIdsUniform == -1) {
+			return;
+		}
+		GL43C.glUniform1fv(entityIdsUniform, ids);
 	}
 
 	/** Atlas geometry for the texture coordinate: slots per row, and slot size in UV. */

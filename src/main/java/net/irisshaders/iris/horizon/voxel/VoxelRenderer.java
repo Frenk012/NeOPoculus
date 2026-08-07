@@ -308,6 +308,8 @@ public final class VoxelRenderer {
 						"horizon_voxel_water", water.orElse(terrain.get()),
 						pipeline.getCustomUniforms(), pipeline, 1.0f / 16.0f);
 				}
+				// Rebuilt with the programs, since block.properties belongs to the pack.
+				entityIds = terrainMode ? resolveEntityIds() : null;
 				irisFramebuffer = pipeline.createHorizonFramebuffer(terrain.get());
 				irisPipeline = pipeline;
 				irisDepthTex = depthTex;
@@ -371,6 +373,9 @@ public final class VoxelRenderer {
 				irisTerrain.bind();
 				irisTerrain.fillUniformData(projection, modelView);
 				irisTerrain.setAtlasParams(bakery.atlasSlotsPerRow(), bakery.atlasSize());
+				if (entityIds != null) {
+					irisTerrain.setEntityIds(entityIds);
+				}
 				for (VoxelRegionMesh mesh : meshes.values()) {
 					if (!visibleNow(mesh, camX, camZ, relY, maxDistSq)) {
 						continue;
@@ -395,6 +400,9 @@ public final class VoxelRenderer {
 					// Water needs the atlas geometry too, or every translucent quad
 					// divides by a zero slot size and produces NaN coordinates.
 					irisWater.setAtlasParams(bakery.atlasSlotsPerRow(), bakery.atlasSize());
+					if (entityIds != null) {
+						irisWater.setEntityIds(entityIds);
+					}
 					for (VoxelRegionMesh mesh : translucentPending) {
 						int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
 						float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
@@ -488,6 +496,41 @@ public final class VoxelRenderer {
 		// Back to the vanilla view distance until the next pack proves it needs
 		// otherwise, so a dh-aware pack is never handed a dh-unaware pack's value.
 		net.irisshaders.iris.horizon.HorizonRuntime.setPackUnawareOfLod(false);
+	}
+
+	/** Pack block ids per material category; rebuilt when the pack changes. */
+	private float[] entityIds;
+
+	/**
+	 * Resolves the active pack's own block id for one representative block of
+	 * each material category the mesher writes.
+	 *
+	 * <p>The numbers are not ours to choose: a pack declares them in
+	 * block.properties and tests {@code mc_Entity.x} against them — Aurora looks
+	 * for 10000, 10004, 10008 and so on. Iris already builds that mapping for
+	 * real terrain, so the same table serves distant terrain, and a pack that
+	 * never declares a category simply gets 0 and treats it as plain terrain,
+	 * which is the honest default.
+	 */
+	private float[] resolveEntityIds() {
+		float[] ids = new float[16];
+		var map = net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings.INSTANCE.getBlockStateIds();
+		if (map == null) {
+			return ids;
+		}
+		ids[DhMaterials.LEAVES] = map.getOrDefault(
+			net.minecraft.world.level.block.Blocks.OAK_LEAVES.defaultBlockState(), 0);
+		ids[DhMaterials.GRASS] = map.getOrDefault(
+			net.minecraft.world.level.block.Blocks.GRASS_BLOCK.defaultBlockState(), 0);
+		ids[DhMaterials.WATER] = map.getOrDefault(
+			net.minecraft.world.level.block.Blocks.WATER.defaultBlockState(), 0);
+		ids[DhMaterials.LAVA] = map.getOrDefault(
+			net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState(), 0);
+		ids[DhMaterials.SNOW] = map.getOrDefault(
+			net.minecraft.world.level.block.Blocks.SNOW_BLOCK.defaultBlockState(), 0);
+		ids[DhMaterials.ILLUMINATED] = map.getOrDefault(
+			net.minecraft.world.level.block.Blocks.GLOWSTONE.defaultBlockState(), 0);
+		return ids;
 	}
 
 	private long probeLast;

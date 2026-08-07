@@ -57,6 +57,18 @@ public final class VoxelRenderer {
 	private int maskCenterX = Integer.MIN_VALUE, maskCenterZ = Integer.MIN_VALUE;
 	private int maskAge;
 
+	// Draw-buffer guard, mirroring the classic engine's legacy pass. A shader
+	// pack binds a G-buffer with several colour attachments; this program
+	// declares one output, so without restricting the draw the LOD fragments
+	// leave the pack's normal/material/specular attachments untouched while
+	// still writing depth. The deferred pass then lights those pixels — which
+	// depth says are real geometry — from stale attachment data, and they blow
+	// out to white. Cached per FBO because packs configure this once per
+	// framebuffer, so re-querying every frame would cost eight round-trips.
+	private final int[] fboDrawBuffers = new int[8];
+	private int cachedDrawBuffersFbo = -1;
+	private boolean cachedDrawBuffersMulti;
+
 	// Diagnostics surfaced on the F3 line.
 	private volatile int drawnLastFrame;
 	private volatile long totalUploaded;
@@ -252,6 +264,26 @@ public final class VoxelRenderer {
 		GL33C.glEnable(GL33C.GL_POLYGON_OFFSET_FILL);
 		GL33C.glPolygonOffset(3.0f, 3.0f);
 
+		int[] prevDrawBuffers = null;
+		int boundFbo = GL33C.glGetInteger(GL33C.GL_DRAW_FRAMEBUFFER_BINDING);
+		if (boundFbo != 0) {
+			if (boundFbo != cachedDrawBuffersFbo) {
+				boolean multi = false;
+				for (int i = 0; i < 8; i++) {
+					fboDrawBuffers[i] = GL33C.glGetInteger(GL33C.GL_DRAW_BUFFER0 + i);
+					if (i > 0 && fboDrawBuffers[i] != GL33C.GL_NONE) {
+						multi = true;
+					}
+				}
+				cachedDrawBuffersFbo = boundFbo;
+				cachedDrawBuffersMulti = multi;
+			}
+			if (cachedDrawBuffersMulti) {
+				prevDrawBuffers = fboDrawBuffers;
+				GL33C.glDrawBuffers(fboDrawBuffers[0]);
+			}
+		}
+
 		GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
 		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
 		int prevTex1 = 0;
@@ -304,6 +336,9 @@ public final class VoxelRenderer {
 		}
 		drawnLastFrame = drawn;
 
+		if (prevDrawBuffers != null) {
+			GL33C.glDrawBuffers(prevDrawBuffers);
+		}
 		GL33C.glPolygonOffset(0.0f, 0.0f);
 		GL33C.glDisable(GL33C.GL_POLYGON_OFFSET_FILL);
 		if (prevCull) {
@@ -440,6 +475,9 @@ public final class VoxelRenderer {
 			inFlight.clear();
 		}
 		fallbackEpoch.clear();
+		// The pack may rebuild its framebuffers; a cached layout for a recycled
+		// FBO name would restore the wrong draw buffers.
+		cachedDrawBuffersFbo = -1;
 		for (VoxelRegionMesh mesh : meshes.values()) {
 			mesh.delete();
 		}

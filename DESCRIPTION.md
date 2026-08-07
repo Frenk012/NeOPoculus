@@ -1,4 +1,14 @@
+<p align="center">
+  <img src="banner.png" alt="NeOPoculus">
+</p>
+
 # NeOPoculus
+
+[![](http://cf.way2muchnoise.eu/short_neopoculus_downloads.svg)](https://www.curseforge.com/minecraft/mc-mods/neopoculus)
+[![](http://cf.way2muchnoise.eu/versions/Available%20for_neopoculus_full.svg)](https://www.curseforge.com/minecraft/mc-mods/neopoculus/files)
+[![](https://img.shields.io/modrinth/dt/neopoculus?logo=modrinth&label=Modrinth&color=00AF5C)](https://modrinth.com/mod/neopoculus)
+[![](https://img.shields.io/discord/0000000000000000?logo=discord&label=Discord&color=5865F2)](https://discord.gg/6WADV66Frv)
+[![](https://img.shields.io/badge/license-LGPL--3.0-blue)](https://github.com/Frenk012/NeOPoculus/blob/main/LICENSE)
 
 **Shaders for NeoForge, with a world that keeps going past your render distance.**
 
@@ -231,6 +241,25 @@ Licensed under **LGPL-3.0**, as inherited from Iris.
 <!--
 BEFORE PUBLISHING
 =================
+
+0. THE BADGES AT THE TOP CONTAIN PLACEHOLDERS.
+   They render as broken until the projects exist, so fill these in first:
+
+     neopoculus  -> the real CurseForge slug, in both way2muchnoise URLs
+     neopoculus  -> the real Modrinth slug or project ID, in the shields.io URL
+     0000000000000000 -> the Discord SERVER ID, not the invite code
+        (Discord > Server Settings > Widget > enable it, then copy Server ID;
+         the badge cannot read member counts from an invite link)
+     banner.png  -> an actual banner, or delete the <p align="center"> block
+
+   Where each badge row belongs:
+     GitHub README  - all of them, this is what badges are for
+     Modrinth       - external images are restricted to approved hosts; shields.io
+                      generally works, way2muchnoise may not. Check the preview and
+                      drop whatever renders as a broken box.
+     CurseForge     - it already shows its own download count and game versions above
+                      the description, so the first two badges are redundant there.
+                      Keeping only Discord and licence reads better.
 
 1. THE SIDEBAR LINK BUTTONS DO NOT COME FROM THIS FILE.
    Both sites build those blocks from fields in the project settings, not from the

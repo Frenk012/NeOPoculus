@@ -107,6 +107,14 @@ public class HorizonConfig {
 	 * Costs quads, which is why it can be turned off again.
 	 */
 	private boolean perCellLodTextures = true;
+	/**
+	 * Share of distant grass, flowers and other cross-shaped plants kept, as a
+	 * percentage. They are the most expensive thing per pixel the LOD draws —
+	 * many small alpha-tested quads, and an alpha-tested fragment cannot be
+	 * rejected early by depth — so thinning them is the cheapest large saving.
+	 * 33 matches the historical one-in-three sampling.
+	 */
+	private int vegetationDensity = 33;
 	/** Armed state of the GUI's cache-clear action; paired with {@link #lodClearConfirm}. */
 	private boolean lodClearArmed = false;
 	/** Second half of the GUI's cache-clear action; both must be on for it to run. */
@@ -151,6 +159,7 @@ public class HorizonConfig {
 		lodAutoClean = Boolean.parseBoolean(props.getProperty("lodAutoClean", Boolean.toString(lodAutoClean)));
 		texturedLodUnderShaders = Boolean.parseBoolean(props.getProperty("texturedLodUnderShaders", Boolean.toString(texturedLodUnderShaders)));
 		perCellLodTextures = Boolean.parseBoolean(props.getProperty("perCellLodTextures", Boolean.toString(perCellLodTextures)));
+		vegetationDensity = clamp(parseInt(props, "vegetationDensity", vegetationDensity), 0, 100);
 
 		if (!Files.exists(file)) {
 			save();
@@ -173,6 +182,7 @@ public class HorizonConfig {
 		props.setProperty("lodAutoClean", Boolean.toString(lodAutoClean));
 		props.setProperty("texturedLodUnderShaders", Boolean.toString(texturedLodUnderShaders));
 		props.setProperty("perCellLodTextures", Boolean.toString(perCellLodTextures));
+		props.setProperty("vegetationDensity", Integer.toString(vegetationDensity));
 		props.setProperty("maxLodVramMb", Integer.toString(maxLodVramMb));
 		props.setProperty("maxUploadBytesPerFrame", Integer.toString(maxUploadBytesPerFrame));
 
@@ -290,6 +300,14 @@ public class HorizonConfig {
 
 	public void setServerLodDiskBudgetMb(int value) {
 		this.serverLodDiskBudgetMb = clamp(value, 64, 65536);
+	}
+
+	public int getVegetationDensity() {
+		return vegetationDensity;
+	}
+
+	public void setVegetationDensity(int value) {
+		this.vegetationDensity = clamp(value, 0, 100);
 	}
 
 	public boolean isPerCellLodTextures() {

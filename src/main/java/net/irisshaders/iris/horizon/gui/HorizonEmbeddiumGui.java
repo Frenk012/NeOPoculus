@@ -148,6 +148,29 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.MEDIUM)
 			.build();
 
+		// The cheapest large saving there is: plants are many small alpha-tested
+		// quads, and an alpha-tested fragment cannot be rejected early by depth.
+		Option<Integer> vegetation = OptionImpl.createBuilder(Integer.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/vegetation_density"))
+			.setName(name("vegetationDensity"))
+			.setTooltip(tooltip("vegetationDensity"))
+			.setControl(o -> new SliderControl(o, 0, 100, 5, ControlValueFormatter.percentage()))
+			.setBinding(new GenericBinding<>(HorizonConfig::setVegetationDensity,
+				HorizonConfig::getVegetationDensity))
+			.setImpact(OptionImpact.HIGH)
+			.build();
+
+		// Ceiling on the mesh memory the LOD may hold on the GPU. Already honoured
+		// by the renderer; it simply had no way to be reached from the game.
+		Option<Integer> vram = OptionImpl.createBuilder(Integer.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/vram_budget"))
+			.setName(name("vramBudget"))
+			.setTooltip(tooltip("vramBudget"))
+			.setControl(o -> new SliderControl(o, 128, 4096, 128, ControlValueFormatter.number()))
+			.setBinding(new GenericBinding<>(HorizonConfig::setMaxLodVramMb, HorizonConfig::getMaxLodVramMb))
+			.setImpact(OptionImpact.MEDIUM)
+			.build();
+
 		// The escape hatch for the cost of per-cell quads. On by default because
 		// stretched block textures are the more obvious defect; off trades that back
 		// for fewer, larger quads.
@@ -212,6 +235,8 @@ public class HorizonEmbeddiumGui {
 			.add(serverLodDisk)
 			.add(texturedLod)
 			.add(perCell)
+			.add(vegetation)
+			.add(vram)
 			.add(autoClean)
 			.add(clearArmed)
 			.add(clearConfirm)

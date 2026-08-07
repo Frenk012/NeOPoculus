@@ -311,7 +311,7 @@ public final class VoxelMesher {
 						// every surface cell and two quads apiece truncated whole
 						// regions at the quad cap. A stable hash keeps the same
 						// tufts across re-meshes, so the field does not shimmer.
-						if (cellSize == 1 && crossKept(baseX + x, baseWorldYCells + y, baseZ + z)) {
+						if (cellSize == 1 && crossKept(baseX + x, baseWorldYCells + y, baseZ + z, HorizonConfig.get().getVegetationDensity())) {
 							buf = emitCross(buf, snap, colors, palettes, metadata, bakery, c, state,
 								x, y, z, baseX, baseZ, baseWorldYCells, cellSize,
 								counters, span, usedFallback);
@@ -481,17 +481,27 @@ public final class VoxelMesher {
 	}
 
 	/** Fraction of cross plants actually drawn, as a 1-in-N sample; the rest are skipped. */
-	private static final int CROSS_SAMPLE = 3;
-
 	/**
 	 * Whether this cell's plant is one of the kept samples. Deterministic in world
 	 * position, so the same tufts survive every re-mesh and a grass field does not
 	 * shimmer as regions rebuild.
+	 *
+	 * <p>Density is the share kept, as a percentage. Plants are the most expensive
+	 * thing per pixel the LOD draws: many small alpha-tested quads, and an
+	 * alpha-tested fragment cannot be rejected early by depth, so they cost far
+	 * more than their area suggests. Thinning them is the cheapest large saving
+	 * available, and at distance the difference is hard to see.
 	 */
-	private static boolean crossKept(int x, int y, int z) {
+	private static boolean crossKept(int x, int y, int z, int densityPercent) {
+		if (densityPercent >= 100) {
+			return true;
+		}
+		if (densityPercent <= 0) {
+			return false;
+		}
 		int h = x * 0x27D4EB2D ^ y * 0x165667B1 ^ z * 0x9E3779B9;
 		h ^= h >>> 15;
-		return Math.floorMod(h, CROSS_SAMPLE) == 0;
+		return Math.floorMod(h, 100) < densityPercent;
 	}
 
 	/** Whether stepping one cell along {@code face} from (x,y,z) leaves the 32³ core. */

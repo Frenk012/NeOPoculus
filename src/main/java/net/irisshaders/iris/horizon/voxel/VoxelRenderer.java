@@ -235,7 +235,8 @@ public final class VoxelRenderer {
 	 *         programs at all.
 	 */
 	private boolean renderIris(Matrix4f modelView, Matrix4f projection,
-							   double camX, double camY, double camZ) {
+							   double camX, double camY, double camZ,
+							   net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery) {
 		if (irisFailed || meshes.isEmpty()) {
 			return false;
 		}
@@ -250,17 +251,25 @@ public final class VoxelRenderer {
 			// hands the whole pack a texture name of zero.
 			int depthTex = pipeline.getHorizonDepthTexture();
 			net.irisshaders.iris.horizon.HorizonRuntime.setMainDepthTex(depthTex);
-			var terrain = pipeline.getDHTerrainShader();
+			// A pack's own gbuffers_terrain stands in when it ships no dh program,
+			// which is what gives Kappa, Lux, Aurora and Noble distant terrain at
+			// all. Every pack has a terrain program, so this is one path rather
+			// than a per-pack workaround.
+			var dh = pipeline.getDHTerrainShader();
+			boolean terrainMode = dh.isEmpty();
+			var terrain = terrainMode ? pipeline.getHorizonTerrainShader() : dh;
 			if (terrain.isEmpty()) {
-				// Say so once. This return used to be silent, which made the pack
-				// look like it had rendered through the shader path when it had
-				// actually dropped to the built-in program.
-				if (!noDhTerrainReported) {
-					noDhTerrainReported = true;
-					Iris.logger.info("Horizon: this shaderpack ships no dh_terrain program; "
-						+ "the voxel LOD will draw with the built-in program instead");
-				}
 				return false; // nothing sensible to shade LOD with
+			}
+			if (terrainMode && bakery.atlasTexture() == 0) {
+				// The pack will sample the atlas as gtexture; without it every
+				// fragment reads whatever is on that unit. Wait for the first bake.
+				return false;
+			}
+			if (terrainMode && !noDhTerrainReported) {
+				noDhTerrainReported = true;
+				Iris.logger.info("Horizon: this shaderpack ships no dh_terrain program; "
+					+ "drawing the voxel LOD through its own gbuffers_terrain instead");
 			}
 			if (irisPipeline != pipeline || irisDepthTex != depthTex) {
 				if (irisPipeline != pipeline) {
@@ -270,16 +279,28 @@ public final class VoxelRenderer {
 				if (irisFramebuffer != null) {
 					irisFramebuffer.destroy();
 				}
+				// Guarded on null, not rebuilt unconditionally: this block re-enters
+				// whenever the depth texture changes — every window resize — and an
+				// unconditional assignment would leak a GL program each time.
 				if (irisTerrain == null) {
 					// 1/16: our positions are in sixteenths of a block.
-					irisTerrain = net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
+					irisTerrain = terrainMode
+						? net.irisshaders.iris.horizon.HorizonIrisProgram.createTerrainProgram(
+						"horizon_voxel_terrain", terrain.get(), pipeline.getCustomUniforms(), pipeline,
+						1.0f / 16.0f, bakery::atlasTexture)
+						: net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
 						"horizon_voxel_terrain", terrain.get(), pipeline.getCustomUniforms(), pipeline, 1.0f / 16.0f);
 				}
 				if (irisWater == null) {
 					// Water gets the pack's dh_water when it has one; otherwise the
 					// terrain program, which still shades far better than ours.
-					var water = pipeline.getDHWaterShader();
-					irisWater = net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
+					var water = terrainMode ? java.util.Optional.<net.irisshaders.iris.shaderpack.programs.ProgramSource>empty()
+						: pipeline.getDHWaterShader();
+					irisWater = terrainMode
+						? net.irisshaders.iris.horizon.HorizonIrisProgram.createTerrainProgram(
+						"horizon_voxel_water", terrain.get(), pipeline.getCustomUniforms(), pipeline,
+						1.0f / 16.0f, bakery::atlasTexture)
+						: net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
 						"horizon_voxel_water", water.orElse(terrain.get()),
 						pipeline.getCustomUniforms(), pipeline, 1.0f / 16.0f);
 				}
@@ -345,6 +366,7 @@ public final class VoxelRenderer {
 				lastBound = irisTerrain;
 				irisTerrain.bind();
 				irisTerrain.fillUniformData(projection, modelView);
+				irisTerrain.setAtlasParams(bakery.atlasSlotsPerRow(), bakery.atlasSize());
 				for (VoxelRegionMesh mesh : meshes.values()) {
 					if (!visibleNow(mesh, camX, camZ, relY, maxDistSq)) {
 						continue;
@@ -366,6 +388,9 @@ public final class VoxelRenderer {
 					lastBound = irisWater;
 					irisWater.bind();
 					irisWater.fillUniformData(projection, modelView);
+					// Water needs the atlas geometry too, or every translucent quad
+					// divides by a zero slot size and produces NaN coordinates.
+					irisWater.setAtlasParams(bakery.atlasSlotsPerRow(), bakery.atlasSize());
 					for (VoxelRegionMesh mesh : translucentPending) {
 						int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
 						float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
@@ -488,7 +513,7 @@ public final class VoxelRenderer {
 		var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
 		// Shaderpack first: it gives the pack real normals and materials. Falling
 		// through means no pack, no dh programs, or a failure already recorded.
-		if (renderIris(modelView, projection, camPos.x, camPos.y, camPos.z)) {
+		if (renderIris(modelView, projection, camPos.x, camPos.y, camPos.z, bakery)) {
 			probe("shaderpack path", meshes.size());
 			return;
 		}

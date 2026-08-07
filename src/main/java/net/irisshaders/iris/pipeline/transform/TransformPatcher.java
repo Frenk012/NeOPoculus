@@ -179,6 +179,9 @@ public class TransformPatcher {
 								case DH_TERRAIN:
 									DHTerrainTransformer.transform(transformer, tree, root, parameters);
 									break;
+								case HORIZON_TERRAIN:
+									DHTerrainTransformer.transform(transformer, tree, root, parameters, true);
+									break;
 								case DH_GENERIC:
 									DHGenericTransformer.transform(transformer, tree, root, parameters);
 									break;
@@ -306,6 +309,17 @@ public class TransformPatcher {
 				});
 	}
 
+
+	/**
+	 * Rewrites a pack's own {@code gbuffers_terrain} onto Horizon's vertex
+	 * interface, so packs that ship no dh program still get distant terrain.
+	 */
+	public static Map<PatchShaderType, String> patchHorizonTerrain(
+			String name, String vertex, String tessControl, String tessEval, String geometry, String fragment,
+			Object2ObjectMap<Tri<String, TextureType, TextureStage>, String> textureMap) {
+		return transform(name, vertex, geometry, tessControl, tessEval, fragment,
+				new DHParameters(Patch.HORIZON_TERRAIN, textureMap));
+	}
 
 	public static Map<PatchShaderType, String> patchDHGeneric(
 			String name, String vertex, String tessControl, String tessEval, String geometry, String fragment,

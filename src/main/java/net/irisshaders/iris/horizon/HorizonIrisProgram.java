@@ -63,6 +63,18 @@ public class HorizonIrisProgram {
 	public final int dhFarPlaneUniform;
 	public final int dhRenderDistanceUniform;
 	private final float positionScale;
+	/** True when this was built from a pack's gbuffers_terrain rather than a dh program. */
+	private final boolean terrainMode;
+	public final int atlasParamsUniform;
+	/**
+	 * Vanilla terrain attributes Horizon has no data for. Bound past every
+	 * attribute the voxel VAO enables (0-3) so the linker cannot place one on top
+	 * of real vertex data, then pinned to a constant.
+	 */
+	private static final int LEGACY_ATTRIBUTE_BASE = 8;
+	private static final String[] LEGACY_ATTRIBUTES = {
+		"mc_Entity", "mc_midTexCoord", "at_tangent", "at_midBlock"
+	};
 	public final int modelViewUniform;
 	public final int modelViewInverseUniform;
 	public final int projectionUniform;
@@ -88,14 +100,27 @@ public class HorizonIrisProgram {
 	private HorizonIrisProgram(String name, BlendModeOverride override, BufferBlendOverride[] bufferBlendOverrides,
 							   String vertex, String tessControl, String tessEval, String geometry, String fragment,
 							   CustomUniforms customUniforms, IrisRenderingPipeline pipeline,
-							   float positionScale) {
+							   float positionScale, boolean terrainMode, java.util.function.IntSupplier atlas) {
 		this.positionScale = positionScale;
+		this.terrainMode = terrainMode;
 		this.bufferBlendOverrides = bufferBlendOverrides;
 		id = GL43C.glCreateProgram();
 
 		GL32.glBindAttribLocation(this.id, 0, "vPosition");
 		GL32.glBindAttribLocation(this.id, 1, "iris_color");
 		GL32.glBindAttribLocation(this.id, 2, "irisExtra");
+		if (terrainMode) {
+			GL32.glBindAttribLocation(this.id, 3, "irisTexInfo");
+			// A terrain program declares vanilla attributes Horizon has no data
+			// for. Rather than rewriting them in the AST — where a fixed-arity
+			// substitution breaks the moment a pack declares at_midBlock as vec4
+			// and reads .w, which PaintBound does — bind them to dead locations
+			// and feed a constant generic value. GL hands a vec2 the .xy of it and
+			// a vec4 all of it, so the arity takes care of itself.
+			for (int i = 0; i < LEGACY_ATTRIBUTES.length; i++) {
+				GL32.glBindAttribLocation(this.id, LEGACY_ATTRIBUTE_BASE + i, LEGACY_ATTRIBUTES[i]);
+			}
+		}
 
 		GlShader vert = new GlShader(ShaderType.VERTEX, name + ".vsh", vertex);
 		GL43C.glAttachShader(id, vert.getHandle());
@@ -153,6 +178,15 @@ public class HorizonIrisProgram {
 		customUniforms.assignTo(uniformBuilder);
 		BuiltinReplacementUniforms.addBuiltinReplacementUniforms(uniformBuilder);
 		ProgramImages.Builder builder = ProgramImages.builder(id);
+		if (terrainMode && atlas != null) {
+			// Registered BEFORE the gbuffer samplers so these names resolve to the
+			// photo atlas. A DYNAMIC sampler, deliberately: an external one would
+			// pin gtexture to unit 0 and force us to bind over the block atlas on
+			// the shared unit and put it back — the exact move this codebase has
+			// already documented as permanent black terrain. Dynamic samplers get
+			// a free unit of their own and never touch unit 0.
+			samplerBuilder.addDynamicSampler(atlas, "tex", "texture", "gtexture");
+		}
 		pipeline.addGbufferOrShadowSamplers(samplerBuilder, builder, pipeline::getFlippedAfterPrepare, false, false, true, false);
 		customUniforms.mapholderToPass(uniformBuilder, this);
 		this.uniforms = uniformBuilder.buildUniforms();
@@ -160,6 +194,7 @@ public class HorizonIrisProgram {
 		samplers = samplerBuilder.build();
 		images = builder.build();
 
+		atlasParamsUniform = tryGetUniformLocation2("horizon_atlasParams");
 		modelOffsetUniform = tryGetUniformLocation2("modelOffset");
 		worldYOffsetUniform = tryGetUniformLocation2("worldYOffset");
 		mircoOffsetUniform = tryGetUniformLocation2("mircoOffset");
@@ -187,12 +222,38 @@ public class HorizonIrisProgram {
 	 * @param positionScale blocks per unit of vertex position — 1.0 for the
 	 *                      classic engine, 1/16 for the voxel engine.
 	 */
+	/**
+	 * Builds from a pack's own {@code gbuffers_terrain} instead of a dh program,
+	 * for the packs that ship no dh program at all. {@code atlas} supplies the
+	 * photo atlas the pack will sample as {@code gtexture}.
+	 */
+	public static HorizonIrisProgram createTerrainProgram(String name, ProgramSource source, CustomUniforms uniforms,
+														  IrisRenderingPipeline pipeline, float positionScale,
+														  java.util.function.IntSupplier atlas) {
+		return createProgram(name, source, uniforms, pipeline, positionScale, true, atlas);
+	}
+
 	public static HorizonIrisProgram createProgram(String name, ProgramSource source, CustomUniforms uniforms, IrisRenderingPipeline pipeline, float positionScale) {
+		return createProgram(name, source, uniforms, pipeline, positionScale, false, null);
+	}
+
+	private static HorizonIrisProgram createProgram(String name, ProgramSource source, CustomUniforms uniforms,
+													IrisRenderingPipeline pipeline, float positionScale,
+													boolean terrainMode, java.util.function.IntSupplier atlas) {
 		// DISTANT_HORIZONS is defined pipeline-wide via StandardMacros when
 		// Horizon is active, so the pack source already resolves its dh
 		// #ifdef branches. Do NOT inject a raw #define here: the DH transformer
 		// rejects preprocessor directives at this stage.
-		Map<PatchShaderType, String> transformed = TransformPatcher.patchDHTerrain(
+		Map<PatchShaderType, String> transformed = terrainMode
+			? TransformPatcher.patchHorizonTerrain(
+			name,
+			source.getVertexSource().orElseThrow(RuntimeException::new),
+			source.getTessControlSource().orElse(null),
+			source.getTessEvalSource().orElse(null),
+			source.getGeometrySource().orElse(null),
+			source.getFragmentSource().orElseThrow(RuntimeException::new),
+			pipeline.getTextureMap())
+			: TransformPatcher.patchDHTerrain(
 			name,
 			source.getVertexSource().orElseThrow(RuntimeException::new),
 			source.getTessControlSource().orElse(null),
@@ -220,7 +281,7 @@ public class HorizonIrisProgram {
 
 		return new HorizonIrisProgram(name, source.getDirectives().getBlendModeOverride().orElse(null),
 			bufferOverrides.toArray(BufferBlendOverride[]::new), vertex, tessControl, tessEval, geometry, fragment,
-			uniforms, pipeline, positionScale);
+			uniforms, pipeline, positionScale, terrainMode, atlas);
 	}
 
 	public int tryGetUniformLocation2(CharSequence name) {
@@ -247,8 +308,35 @@ public class HorizonIrisProgram {
 		}
 	}
 
+	/** Atlas geometry for the texture coordinate: slots per row, and slot size in UV. */
+	public void setAtlasParams(int slotsPerRow, int atlasSize) {
+		if (atlasParamsUniform == -1 || atlasSize <= 0) {
+			return;
+		}
+		GL43C.glUniform2f(atlasParamsUniform, slotsPerRow, 16.0f / atlasSize);
+	}
+
+	public boolean isTerrainMode() {
+		return terrainMode;
+	}
+
 	public void bind() {
 		GL43C.glUseProgram(id);
+		if (terrainMode) {
+			// Constant values for the vanilla attributes we bound to dead slots.
+			// mc_Entity.x = 0 is "not a waving block", which is what disables every
+			// pack's foliage displacement; y = -1 is Iris's BLOCK_RENDER_TYPE.
+			GL43C.glVertexAttrib4f(LEGACY_ATTRIBUTE_BASE, 0.0f, -1.0f, 0.0f, 1.0f);
+			// mc_midTexCoord: the middle of the slot, so `uv - mc_midTexCoord`
+			// stays small and bounded rather than wandering across the atlas.
+			GL43C.glVertexAttrib4f(LEGACY_ATTRIBUTE_BASE + 1, 0.5f, 0.5f, 0.0f, 1.0f);
+			// at_tangent must not be the zero vector: packs normalize it to build a
+			// TBN, and normalize(vec3(0)) is NaN, which comes out as black pixels.
+			GL43C.glVertexAttrib4f(LEGACY_ATTRIBUTE_BASE + 2, 1.0f, 0.0f, 0.0f, 1.0f);
+			// at_midBlock: centre, and w = 0 so packs reading it as an emissive
+			// flag read "not emissive".
+			GL43C.glVertexAttrib4f(LEGACY_ATTRIBUTE_BASE + 3, 0.0f, 0.0f, 0.0f, 0.0f);
+		}
 		if (blend != null) blend.apply();
 		for (BufferBlendOverride override : bufferBlendOverrides) {
 			override.apply();
@@ -317,6 +405,17 @@ public class HorizonIrisProgram {
 		// dhFarPlane and dhRenderDistance, which is where packs look for it.
 		float lodFar = HorizonRuntime.farPlane();
 		setUniform(dhFarPlaneUniform, lodFar);
+		if (terrainMode) {
+			// Inverted from the dh path, and deliberately. A dh program knows it is
+			// drawing LOD and fogs against dhFarPlane, so `far` must stay at the
+			// vanilla distance for its near-cutoff to land in the right place. A
+			// gbuffers_terrain program has no idea it is drawing LOD: it fogs
+			// against `far`, so leaving that at the vanilla distance turns every
+			// LOD fragment into solid fog. This cannot leak into the pack's real
+			// terrain pass — that is a separate program object with its own
+			// uniform storage.
+			setUniform(farUniform, lodFar);
+		}
 		if (dhRenderDistanceUniform != -1) {
 			GL43C.glUniform1i(dhRenderDistanceUniform, HorizonRuntime.renderDistanceChunks());
 		}

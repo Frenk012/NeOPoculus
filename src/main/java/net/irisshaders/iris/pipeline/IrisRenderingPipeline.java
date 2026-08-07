@@ -1350,6 +1350,16 @@ public class IrisRenderingPipeline implements WorldRenderingPipeline, ShaderRend
 		return resolver.resolve(ProgramId.DhTerrain);
 	}
 
+	/**
+	 * The pack's own terrain program, for drawing distant LOD in packs that ship
+	 * no dh program. Every pack has one — the resolver falls back through
+	 * TexturedLit, Textured and Basic — which is what makes this a single path
+	 * rather than a per-pack workaround.
+	 */
+	public Optional<ProgramSource> getHorizonTerrainShader() {
+		return resolver.resolve(ProgramId.Terrain);
+	}
+
 	public Optional<ProgramSource> getDHGenericShader() {
 		return resolver.resolve(ProgramId.DhGeneric);
 	}

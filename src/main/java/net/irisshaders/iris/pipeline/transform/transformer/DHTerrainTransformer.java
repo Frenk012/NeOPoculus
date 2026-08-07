@@ -6,7 +6,6 @@ import io.github.douira.glsl_transformer.ast.query.Root;
 import io.github.douira.glsl_transformer.ast.transform.ASTInjectionPoint;
 import io.github.douira.glsl_transformer.ast.transform.ASTParser;
 import io.github.douira.glsl_transformer.util.Type;
-import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.gl.shader.ShaderType;
 import net.irisshaders.iris.pipeline.transform.parameter.Parameters;
 
@@ -17,6 +16,21 @@ public class DHTerrainTransformer {
 		ASTParser t,
 		TranslationUnit tree,
 		Root root, Parameters parameters) {
+		transform(t, tree, root, parameters, false);
+	}
+
+	/**
+	 * @param textured true when the source is a pack's own {@code gbuffers_terrain}
+	 *                 rather than a dh program. A dh program is vertex-coloured and
+	 *                 never samples a texture, so the DH rewrite feeds
+	 *                 {@code gl_MultiTexCoord0} a constant; a terrain program does
+	 *                 sample {@code gtexture} and needs a real coordinate into
+	 *                 Horizon's photo atlas.
+	 */
+	public static void transform(
+		ASTParser t,
+		TranslationUnit tree,
+		Root root, Parameters parameters, boolean textured) {
 		CommonTransformer.transform(t, tree, root, parameters, false);
 
 
@@ -30,7 +44,7 @@ public class DHTerrainTransformer {
 			root.rename("gl_MultiTexCoord2", "gl_MultiTexCoord1");
 
 			root.replaceReferenceExpressions(t, "gl_MultiTexCoord0",
-				"vec4(0.0, 0.0, 0.0, 1.0)");
+				textured ? "vec4(_horizon_uv, 0.0, 1.0)" : "vec4(0.0, 0.0, 0.0, 1.0)");
 
 			root.replaceReferenceExpressions(t, "gl_MultiTexCoord1",
 				"vec4(_vert_tex_light_coord, 0.0, 1.0)");
@@ -62,8 +76,6 @@ public class DHTerrainTransformer {
 		tree.parseAndInjectNode(t, ASTInjectionPoint.BEFORE_DECLARATIONS,
 			"uniform mat4 iris_ProjectionMatrixInverse;");
 
-		Iris.logger.warn("Type is " + parameters.type);
-
 		// TODO: All of the transformed variants of the input matrices, preferably
 		// computed on the CPU side...
 		root.rename("gl_ModelViewMatrix", "iris_ModelViewMatrix");
@@ -87,7 +99,7 @@ public class DHTerrainTransformer {
 			// inject here so that _vert_position is available to the above. (injections
 			// inject in reverse order if performed piece-wise but in correct order if
 			// performed as an array of injections)
-			injectVertInit(t, tree, root, parameters);
+			injectVertInit(t, tree, root, parameters, textured);
 		} else {
 			tree.parseAndInjectNodes(t, ASTInjectionPoint.BEFORE_DECLARATIONS,
 				"uniform mat4 iris_ModelViewMatrix;",
@@ -105,6 +117,18 @@ public class DHTerrainTransformer {
 		TranslationUnit tree,
 		Root root,
 		Parameters parameters) {
+		injectVertInit(t, tree, root, parameters, false);
+	}
+
+	public static void injectVertInit(
+		ASTParser t,
+		TranslationUnit tree,
+		Root root,
+		Parameters parameters,
+		boolean textured) {
+		if (textured) {
+			injectAtlasUv(t, tree, root);
+		}
 		tree.parseAndInjectNodes(t, ASTInjectionPoint.BEFORE_FUNCTIONS,
 			// translated from sodium's chunk_vertex.glsl
 			"vec3 _vert_position;",
@@ -149,5 +173,46 @@ public class DHTerrainTransformer {
 		addIfNotExists(root, t, tree, "vPosition", Type.U32VEC4, StorageQualifier.StorageType.IN);
 		addIfNotExists(root, t, tree, "irisExtra", Type.U32VEC4, StorageQualifier.StorageType.IN);
 		tree.prependMainFunctionBody(t, "_vert_init();");
+		if (textured) {
+			// Runs before _vert_init(); the two are independent.
+			tree.prependMainFunctionBody(t, "_horizon_uv_init();");
+		}
+	}
+
+	/**
+	 * Gives a terrain program a texture coordinate into Horizon's photo atlas.
+	 *
+	 * <p>One atlas slot is stretched across one merged quad rather than tiled per
+	 * cell. Tiling is what the built-in shader does, with a fragment-side
+	 * {@code fract}, but a pack computes its own texcoord varying in its own
+	 * vertex shader and we cannot reach inside it — and linear interpolation of a
+	 * per-vertex coordinate cannot produce a {@code fract}. Since quads are
+	 * greedy-merged up to {@code MERGE_CAP} cells, the worst case is a 16x16 plate
+	 * showing one smeared sprite, which lands about where the flat fallback colour
+	 * already was. Everything else the pack does — its own lighting, shadows, fog
+	 * and normals — is a clear gain over drawing no distant terrain at all.
+	 *
+	 * <p>The corner index needs no extra vertex data: the shared index buffer
+	 * emits {@code 4q + {0,1,2,2,3,0}} and every quad emitter writes its four
+	 * vertices in the ring order (0,0) (1,0) (1,1) (0,1), so the low two bits of
+	 * {@code gl_VertexID} are the corner.
+	 */
+	private static void injectAtlasUv(ASTParser t, TranslationUnit tree, Root root) {
+		tree.parseAndInjectNodes(t, ASTInjectionPoint.BEFORE_FUNCTIONS,
+			"vec2 _horizon_uv;",
+			"void _horizon_uv_init() {" +
+				"    float spr = max(horizon_atlasParams.x, 1.0);\n" +
+				"    float sz = horizon_atlasParams.y;\n" +
+				"    float slot = float(irisTexInfo.x);\n" +
+				"    vec2 origin = vec2(mod(slot, spr), floor(slot / spr)) * sz;\n" +
+				"    uint corner = uint(gl_VertexID) & 3u;\n" +
+				"    vec2 c = vec2((corner == 1u || corner == 2u) ? 1.0 : 0.0,\n" +
+				"                  (corner == 2u || corner == 3u) ? 1.0 : 0.0);\n" +
+				// Half a texel of a 16px slot, so bilinear filtering at the slot
+				// edge cannot bleed in the neighbouring block's photo.
+				"    float inset = sz * 0.03125;\n" +
+				"    _horizon_uv = origin + inset + c * (sz - 2.0 * inset); }");
+		addIfNotExists(root, t, tree, "horizon_atlasParams", Type.F32VEC2, StorageQualifier.StorageType.UNIFORM);
+		addIfNotExists(root, t, tree, "irisTexInfo", Type.U32VEC2, StorageQualifier.StorageType.IN);
 	}
 }

@@ -65,6 +65,7 @@ public class HorizonIrisProgram {
 	private final float positionScale;
 	/** True when this was built from a pack's gbuffers_terrain rather than a dh program. */
 	private final boolean terrainMode;
+	private final String terrainProbe;
 	public final int atlasParamsUniform;
 	public final int fogStartUniform;
 	public final int fogEndUniform;
@@ -216,18 +217,9 @@ public class HorizonIrisProgram {
 		fogEndUniform = tryGetUniformLocation2("fogEnd");
 		irisFogStartUniform = tryGetUniformLocation2("iris_FogStart");
 		irisFogEndUniform = tryGetUniformLocation2("iris_FogEnd");
-		if (terrainMode) {
-			// Which of these a pack actually declares decides whether an override
-			// here can do anything at all. Two fixes in a row landed on names the
-			// target packs never use, and the screenshots were byte-identical —
-			// this says so directly instead of leaving it to be inferred.
-			net.irisshaders.iris.Iris.logger.info("Horizon terrain program '" + name + "': "
-				+ "atlasParams=" + atlasParamsUniform + " far=" + farUniform
-				+ " fogStart=" + fogStartUniform + " fogEnd=" + fogEndUniform
-				+ " iris_FogStart=" + irisFogStartUniform + " iris_FogEnd=" + irisFogEndUniform
-				+ " | samplers: atlas=" + atlasTaken + " normals=" + normalsTaken
-				+ " specular=" + specularTaken);
-		}
+		this.terrainProbe = terrainMode
+			? "atlas=" + atlasTaken + " normals=" + normalsTaken + " specular=" + specularTaken
+			: null;
 		modelOffsetUniform = tryGetUniformLocation2("modelOffset");
 		worldYOffsetUniform = tryGetUniformLocation2("worldYOffset");
 		mircoOffsetUniform = tryGetUniformLocation2("mircoOffset");
@@ -244,6 +236,17 @@ public class HorizonIrisProgram {
 		dhProjectionUniform = tryGetUniformLocation2("dhProjection");
 		dhProjectionInverseUniform = tryGetUniformLocation2("dhProjectionInverse");
 		dhPreviousProjectionUniform = tryGetUniformLocation2("dhPreviousProjection");
+
+		if (terrainProbe != null) {
+			// Which names a pack actually declares decides whether an override here
+			// can do anything at all. A -1 means the pack never uses that uniform,
+			// so setting it is a no-op no matter how right the value is.
+			net.irisshaders.iris.Iris.logger.info("Horizon terrain program '" + name + "': "
+				+ "atlasParams=" + atlasParamsUniform + " far=" + farUniform
+				+ " fogStart=" + fogStartUniform + " fogEnd=" + fogEndUniform
+				+ " iris_FogStart=" + irisFogStartUniform + " iris_FogEnd=" + irisFogEndUniform
+				+ " | samplers: " + terrainProbe);
+		}
 	}
 
 	/** Classic engine: vertex positions are whole blocks. */

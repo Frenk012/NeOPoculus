@@ -167,7 +167,19 @@ public class DHTerrainTransformer {
 				"_vert_normal = irisNormals[irisExtra.y < 6u ? irisExtra.y : 1u];" +
 				"dhMaterialId = int(irisExtra.x);" +
 				"_vert_tex_light_coord = vec2((float(lights/16u)+0.5) / 16.0, (mod(float(lights), 16.0)+0.5) / 16.0);" +
-				"_vert_color = iris_color; }");
+				// A pack multiplies its texture by the vertex colour, the way vanilla
+				// terrain applies a biome tint to an untinted sprite. Horizon's
+				// photos are already baked per (state, biome), so handing over the
+				// block's colour as well applies the tint twice — saturated greens,
+				// wrong water. The built-in shader has the same rule written the
+				// other way round: with a baked slot it does `base = tex.rgb`,
+				// replacing the colour rather than multiplying it, and falls back to
+				// the flat colour only when no bake has landed (slot 0). White here
+				// means "take the photo as it is"; the alpha still carries
+				// translucency.
+				(textured
+					? "_vert_color = irisTexInfo.x != 0u ? vec4(1.0, 1.0, 1.0, iris_color.a) : iris_color; }"
+					: "_vert_color = iris_color; }"));
 		addIfNotExists(root, t, tree, "irisPositionScale", Type.FLOAT32, StorageQualifier.StorageType.UNIFORM);
 		addIfNotExists(root, t, tree, "iris_color", Type.F32VEC4, StorageQualifier.StorageType.IN);
 		addIfNotExists(root, t, tree, "vPosition", Type.U32VEC4, StorageQualifier.StorageType.IN);

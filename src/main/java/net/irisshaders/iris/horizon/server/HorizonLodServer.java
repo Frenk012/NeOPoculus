@@ -77,6 +77,15 @@ public final class HorizonLodServer {
 			RegisterCommandsEvent.class, HorizonLodServer::onRegisterCommands);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
 			ServerTickEvent.Post.class, HorizonLodServer::onServerTick);
+		// Build the server's LOD residency as soon as the server is up, not when a
+		// generation first runs: a restarted server already has LOD on disk, and
+		// without a store it has nothing to offer joining players.
+		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
+			net.neoforged.neoforge.event.server.ServerStartedEvent.class, e -> {
+				if (headless()) {
+					serverStores(e.getServer());
+				}
+			});
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ServerStoppingEvent.class, e -> {
 			active = null;
 			var s = stores;

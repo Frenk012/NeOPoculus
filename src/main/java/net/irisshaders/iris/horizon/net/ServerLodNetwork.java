@@ -67,6 +67,9 @@ public final class ServerLodNetwork {
 			return;
 		}
 		try {
+			// Touch the dimension's store first: it is what loads the palette, and
+			// the greeting advertises the palette the client is about to receive.
+			stores.storeFor(player.serverLevel());
 			ResourceLocation dim = player.level().dimension().location();
 			player.connection.send(new net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket(
 				new HorizonPayloads.Hello(dim, stores.palettes().stateCount(), 0)));

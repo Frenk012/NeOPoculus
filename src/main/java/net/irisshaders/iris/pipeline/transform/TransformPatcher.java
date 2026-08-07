@@ -318,7 +318,19 @@ public class TransformPatcher {
 			String name, String vertex, String tessControl, String tessEval, String geometry, String fragment,
 			Object2ObjectMap<Tri<String, TextureType, TextureStage>, String> textureMap) {
 		return transform(name, vertex, geometry, tessControl, tessEval, fragment,
-				new DHParameters(Patch.HORIZON_TERRAIN, textureMap));
+				new DHParameters(Patch.HORIZON_TERRAIN, textureMap) {
+					@Override
+					public net.irisshaders.iris.gl.blending.AlphaTest getAlphaTest() {
+						// Cross-plant blocks — grass, flowers, vines — and the holes in
+						// leaves are transparent texels in the photo atlas. A dh program
+						// never samples a texture so it never needed this, but without
+						// the cutout a terrain program draws them as solid coloured
+						// cubes, which is what speckles distant terrain. The threshold
+						// itself is overridden on the program, since the uniform Iris
+						// feeds this from tracks the vanilla pass, not ours.
+						return net.irisshaders.iris.gl.blending.AlphaTests.ONE_TENTH_ALPHA;
+					}
+				});
 	}
 
 	public static Map<PatchShaderType, String> patchDHGeneric(

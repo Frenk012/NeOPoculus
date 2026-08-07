@@ -67,6 +67,7 @@ public class HorizonIrisProgram {
 	private final boolean terrainMode;
 	private final String terrainProbe;
 	public final int atlasParamsUniform;
+	public final int alphaTestUniform;
 	public final int fogStartUniform;
 	public final int fogEndUniform;
 	public final int irisFogStartUniform;
@@ -213,6 +214,7 @@ public class HorizonIrisProgram {
 		images = builder.build();
 
 		atlasParamsUniform = tryGetUniformLocation2("horizon_atlasParams");
+		alphaTestUniform = tryGetUniformLocation2("iris_currentAlphaTest");
 		fogStartUniform = tryGetUniformLocation2("fogStart");
 		fogEndUniform = tryGetUniformLocation2("fogEnd");
 		irisFogStartUniform = tryGetUniformLocation2("iris_FogStart");
@@ -488,6 +490,10 @@ public class HorizonIrisProgram {
 			// terrain pass — that is a separate program object with its own
 			// uniform storage.
 			setUniform(farUniform, lodFar);
+			// The cutout threshold. Iris feeds this uniform from the vanilla pass's
+			// current alpha test, which says nothing about ours, so it is set here
+			// after the shared update — same reason as the projection above.
+			setUniform(alphaTestUniform, 0.5f);
 			// Vanilla fog is handed to the program at the vanilla render distance,
 			// so distant terrain arrives already saturated — Aurora drew the LOD
 			// and then buried it under solid sky. Push the range out to the LOD

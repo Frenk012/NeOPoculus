@@ -49,6 +49,15 @@ neoForge {
 			gameDirectory = file('run-server')
 		}
 
+		// Client that joins the local test server straight away, so the
+		// server-provided LOD path can be exercised without clicking through
+		// the multiplayer menu on every run.
+		clientJoin {
+			client()
+			programArguments.addAll '--quickPlayMultiplayer', 'localhost:25565'
+			systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+		}
+
 		gameTestServer {
 			type = "gameTestServer"
 			systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id

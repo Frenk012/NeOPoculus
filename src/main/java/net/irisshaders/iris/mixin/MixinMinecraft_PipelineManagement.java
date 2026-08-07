@@ -1,6 +1,7 @@
 package net.irisshaders.iris.mixin;
 
 import net.irisshaders.iris.Iris;
+import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ReceivingLevelScreen;
 import net.minecraft.client.gui.screens.Screen;
@@ -49,8 +50,16 @@ public class MixinMinecraft_PipelineManagement {
 	 */
 	@Inject(method = "updateLevelInEngines", at = @At("HEAD"))
 	private void iris$resetPipeline(@Nullable ClientLevel level, CallbackInfo ci) {
-		if (!Iris.getCurrentDimension().equals(Iris.lastDimension)) {
-			Iris.logger.info("Reloading pipeline on dimension change: " + Iris.lastDimension + " => " + Iris.getCurrentDimension());
+		// getCurrentDimension() is null while there is no level — which happens on
+		// the disconnect this runs through when joining a server directly (Quick
+		// Play, or a "connect to server" launch argument). Calling equals on it
+		// threw and took the whole connection down before it began.
+		NamespacedId current = Iris.getCurrentDimension();
+		if (current == null) {
+			return;
+		}
+		if (!current.equals(Iris.lastDimension)) {
+			Iris.logger.info("Reloading pipeline on dimension change: " + Iris.lastDimension + " => " + current);
 			// Destroy pipelines when changing dimensions.
 			Iris.getPipelineManager().destroyPipeline();
 

@@ -306,11 +306,11 @@ public final class VoxelRenderer {
 			// has nothing to do with LOD, and why the real Distant Horizons never
 			// does: Iris drives that pass and owns the state around it.
 			GlStateManager.DepthState depthState = GlStateManagerAccessor.getDEPTH();
-			GlStateManager.BlendState blendState = GlStateManagerAccessor.getBLEND();
 			boolean prevDepthTest = ((BooleanStateAccessor) depthState.mode).isEnabled();
 			int prevDepthFunc = depthState.func;
 			boolean prevDepthMask = depthState.mask;
-			boolean prevBlend = ((BooleanStateAccessor) blendState.mode).isEnabled();
+			// Blend is not snapshotted: BlendModeOverride.restore() puts back what
+			// the pack had, which is the only value that matters here.
 			// GlStateManager.CullState is package-private, so cull is the one flag
 			// read from the driver. That is sound now that every write below goes
 			// through GlStateManager: cache and driver no longer diverge.
@@ -322,7 +322,14 @@ public final class VoxelRenderer {
 				GlStateManager._enableDepthTest();
 				GlStateManager._depthFunc(GL33C.GL_LEQUAL);
 				GlStateManager._depthMask(true);
-				GlStateManager._disableBlend();
+				// Not GlStateManager._disableBlend(): while a blend override is
+				// locked — which it is, for the pack's gbuffer pass — Iris's own
+				// mixin cancels that call and merely records the intent, so the
+				// driver keeps the pack's blend and opaque LOD blends away to
+				// nothing. overrideBlend is the designed way through: it drops the
+				// lock, applies for real, and re-arms. A pack that declares its own
+				// blend for dh_terrain still wins, because bind() applies it after.
+				net.irisshaders.iris.gl.blending.BlendModeOverride.OFF.apply();
 				GlStateManager._disableCull(); // winding is not outward-consistent yet
 				GlStateManager._enablePolygonOffset();
 				// Same trick as the no-pack pass: push LOD fragments back so loaded
@@ -387,11 +394,10 @@ public final class VoxelRenderer {
 				}
 				GlStateManager._depthFunc(prevDepthFunc);
 				GlStateManager._depthMask(prevDepthMask);
-				if (prevBlend) {
-					GlStateManager._enableBlend();
-				} else {
-					GlStateManager._disableBlend();
-				}
+				// Hands blend back to whatever the pack had before this pass, and
+				// drops the lock so its next toggle is not swallowed. Idempotent,
+				// so the unbind() above having already done it costs nothing.
+				net.irisshaders.iris.gl.blending.BlendModeOverride.restore();
 				if (prevCull) {
 					GlStateManager._enableCull();
 				} else {
@@ -543,12 +549,15 @@ public final class VoxelRenderer {
 		int prevDepthFunc = depthState.func;
 		boolean prevDepthMask = depthState.mask;
 		boolean prevCull = GL33C.glIsEnabled(GL33C.GL_CULL_FACE);
-		boolean prevBlend = ((BooleanStateAccessor) GlStateManagerAccessor.getBLEND().mode).isEnabled();
+		// Blend is handled by BlendModeOverride below, so it needs no snapshot.
 
 		GlStateManager._enableDepthTest();
 		GlStateManager._depthFunc(GL33C.GL_LEQUAL);
 		GlStateManager._depthMask(true);
-		GlStateManager._disableBlend();
+		// Same reason as the shaderpack path: a pack can be active even when we
+		// are drawing with the built-in program, and a locked override would
+		// swallow a plain _disableBlend.
+		net.irisshaders.iris.gl.blending.BlendModeOverride.OFF.apply();
 		GlStateManager._disableCull(); // M3: two-sided until winding is verified
 		GlStateManager._enablePolygonOffset();
 		GlStateManager._polygonOffset(3.0f, 3.0f);
@@ -641,11 +650,7 @@ public final class VoxelRenderer {
 		} else {
 			GlStateManager._disableCull();
 		}
-		if (prevBlend) {
-			GlStateManager._enableBlend();
-		} else {
-			GlStateManager._disableBlend();
-		}
+		net.irisshaders.iris.gl.blending.BlendModeOverride.restore();
 		if (bakery.atlasTexture() != 0) {
 			GlStateManager._activeTexture(GL33C.GL_TEXTURE1);
 			GlStateManager._bindTexture(prevTex1);

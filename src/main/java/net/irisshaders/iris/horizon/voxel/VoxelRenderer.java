@@ -452,18 +452,41 @@ public final class VoxelRenderer {
 		noDhTerrainReported = false; // the next pack gets its own verdict
 	}
 
+	private long probeLast;
+	private String probeLastWhat = "";
+
+	/**
+	 * Says once every few seconds which path the frame took and how much it
+	 * actually drew. "Meshes exist but nothing is on screen" and "no meshes were
+	 * ever built" look identical from the player's chair, and guessing between
+	 * them has cost more than one wrong fix.
+	 */
+	private void probe(String what, int held) {
+		long now = System.currentTimeMillis();
+		if (now - probeLast < 5000 && what.equals(probeLastWhat)) {
+			return;
+		}
+		probeLast = now;
+		probeLastWhat = what;
+		Iris.logger.info("Horizon probe: " + what + " — " + held + " meshes held, "
+			+ drawnLastFrame + " drawn last frame, irisFailed=" + irisFailed);
+	}
+
 	/** Render thread. Draws every visible region mesh, sampling the photo atlas (flat color where unbaked). */
 	public void render(Matrix4f modelView, Matrix4f projection, net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery) {
 		processUploads(HorizonConfig.get().getMaxUploadsPerFrame());
 		if (meshes.isEmpty()) {
+			probe("no meshes held", 0);
 			return;
 		}
 		var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
 		// Shaderpack first: it gives the pack real normals and materials. Falling
 		// through means no pack, no dh programs, or a failure already recorded.
 		if (renderIris(modelView, projection, camPos.x, camPos.y, camPos.z)) {
+			probe("shaderpack path", meshes.size());
 			return;
 		}
+		probe("built-in path", meshes.size());
 		if (!shader.ensure()) {
 			return;
 		}

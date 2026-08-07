@@ -66,6 +66,10 @@ public class HorizonIrisProgram {
 	/** True when this was built from a pack's gbuffers_terrain rather than a dh program. */
 	private final boolean terrainMode;
 	public final int atlasParamsUniform;
+	public final int fogStartUniform;
+	public final int fogEndUniform;
+	public final int irisFogStartUniform;
+	public final int irisFogEndUniform;
 	/**
 	 * Vanilla terrain attributes Horizon has no data for. Bound past every
 	 * attribute the voxel VAO enables (0-3) so the linker cannot place one on top
@@ -178,6 +182,16 @@ public class HorizonIrisProgram {
 		customUniforms.assignTo(uniformBuilder);
 		BuiltinReplacementUniforms.addBuiltinReplacementUniforms(uniformBuilder);
 		ProgramImages.Builder builder = ProgramImages.builder(id);
+		if (terrainMode) {
+			// Registered first so they win over addGbufferOrShadowSamplers, which
+			// points these at the BLOCK atlas's PBR maps. Sampling those with a
+			// photo-atlas coordinate reads whatever LabPBR data happens to live at
+			// that spot — random normals and shininess, which is what speckles
+			// distant terrain and turns water strange colours. Flat normal and zero
+			// specular say "plain surface" instead.
+			samplerBuilder.addDynamicSampler(HorizonIrisProgram::flatNormalTexture, "normals");
+			samplerBuilder.addDynamicSampler(HorizonIrisProgram::zeroSpecularTexture, "specular");
+		}
 		if (terrainMode && atlas != null) {
 			// Registered BEFORE the gbuffer samplers so these names resolve to the
 			// photo atlas. A DYNAMIC sampler, deliberately: an external one would
@@ -195,6 +209,10 @@ public class HorizonIrisProgram {
 		images = builder.build();
 
 		atlasParamsUniform = tryGetUniformLocation2("horizon_atlasParams");
+		fogStartUniform = tryGetUniformLocation2("fogStart");
+		fogEndUniform = tryGetUniformLocation2("fogEnd");
+		irisFogStartUniform = tryGetUniformLocation2("iris_FogStart");
+		irisFogEndUniform = tryGetUniformLocation2("iris_FogEnd");
 		modelOffsetUniform = tryGetUniformLocation2("modelOffset");
 		worldYOffsetUniform = tryGetUniformLocation2("worldYOffset");
 		mircoOffsetUniform = tryGetUniformLocation2("mircoOffset");
@@ -308,6 +326,43 @@ public class HorizonIrisProgram {
 		}
 	}
 
+	private static int flatNormal;
+	private static int zeroSpecular;
+
+	/** 1x1 flat normal, so a pack's PBR path reads "surface facing straight out". */
+	private static int flatNormalTexture() {
+		if (flatNormal == 0) {
+			flatNormal = solidTexture(new byte[]{(byte) 128, (byte) 128, (byte) 255, (byte) 255});
+		}
+		return flatNormal;
+	}
+
+	/** 1x1 zero specular, so nothing distant reads as wet, metallic or emissive. */
+	private static int zeroSpecularTexture() {
+		if (zeroSpecular == 0) {
+			zeroSpecular = solidTexture(new byte[]{0, 0, 0, 0});
+		}
+		return zeroSpecular;
+	}
+
+	private static int solidTexture(byte[] rgba) {
+		int tex = GL43C.glGenTextures();
+		int prevActive = net.irisshaders.iris.mixin.GlStateManagerAccessor.getActiveTexture();
+		int prev = net.irisshaders.iris.mixin.GlStateManagerAccessor.getTEXTURES()[prevActive].binding;
+		GL43C.glBindTexture(GL43C.GL_TEXTURE_2D, tex);
+		java.nio.ByteBuffer pixel = org.lwjgl.system.MemoryUtil.memAlloc(4);
+		pixel.put(rgba).flip();
+		GL43C.glTexImage2D(GL43C.GL_TEXTURE_2D, 0, GL43C.GL_RGBA8, 1, 1, 0,
+			GL43C.GL_RGBA, GL43C.GL_UNSIGNED_BYTE, pixel);
+		org.lwjgl.system.MemoryUtil.memFree(pixel);
+		GL43C.glTexParameteri(GL43C.GL_TEXTURE_2D, GL43C.GL_TEXTURE_MIN_FILTER, GL43C.GL_NEAREST);
+		GL43C.glTexParameteri(GL43C.GL_TEXTURE_2D, GL43C.GL_TEXTURE_MAG_FILTER, GL43C.GL_NEAREST);
+		// Put back what the caller had bound, so building a program never changes
+		// what the rest of the frame is sampling.
+		GL43C.glBindTexture(GL43C.GL_TEXTURE_2D, prev);
+		return tex;
+	}
+
 	/** Atlas geometry for the texture coordinate: slots per row, and slot size in UV. */
 	public void setAtlasParams(int slotsPerRow, int atlasSize) {
 		if (atlasParamsUniform == -1 || atlasSize <= 0) {
@@ -415,6 +470,15 @@ public class HorizonIrisProgram {
 			// terrain pass — that is a separate program object with its own
 			// uniform storage.
 			setUniform(farUniform, lodFar);
+			// Vanilla fog is handed to the program at the vanilla render distance,
+			// so distant terrain arrives already saturated — Aurora drew the LOD
+			// and then buried it under solid sky. Push the range out to the LOD
+			// distance, fading only the last stretch, which is what the built-in
+			// path has always done.
+			setUniform(fogStartUniform, lodFar * 0.80f);
+			setUniform(fogEndUniform, lodFar);
+			setUniform(irisFogStartUniform, lodFar * 0.80f);
+			setUniform(irisFogEndUniform, lodFar);
 		}
 		if (dhRenderDistanceUniform != -1) {
 			GL43C.glUniform1i(dhRenderDistanceUniform, HorizonRuntime.renderDistanceChunks());

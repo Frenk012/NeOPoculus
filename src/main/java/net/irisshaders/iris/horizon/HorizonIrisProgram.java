@@ -182,6 +182,9 @@ public class HorizonIrisProgram {
 		customUniforms.assignTo(uniformBuilder);
 		BuiltinReplacementUniforms.addBuiltinReplacementUniforms(uniformBuilder);
 		ProgramImages.Builder builder = ProgramImages.builder(id);
+		boolean normalsTaken = false;
+		boolean specularTaken = false;
+		boolean atlasTaken = false;
 		if (terrainMode) {
 			// Registered first so they win over addGbufferOrShadowSamplers, which
 			// points these at the BLOCK atlas's PBR maps. Sampling those with a
@@ -189,8 +192,8 @@ public class HorizonIrisProgram {
 			// that spot — random normals and shininess, which is what speckles
 			// distant terrain and turns water strange colours. Flat normal and zero
 			// specular say "plain surface" instead.
-			samplerBuilder.addDynamicSampler(HorizonIrisProgram::flatNormalTexture, "normals");
-			samplerBuilder.addDynamicSampler(HorizonIrisProgram::zeroSpecularTexture, "specular");
+			normalsTaken = samplerBuilder.addDynamicSampler(HorizonIrisProgram::flatNormalTexture, "normals");
+			specularTaken = samplerBuilder.addDynamicSampler(HorizonIrisProgram::zeroSpecularTexture, "specular");
 		}
 		if (terrainMode && atlas != null) {
 			// Registered BEFORE the gbuffer samplers so these names resolve to the
@@ -199,7 +202,7 @@ public class HorizonIrisProgram {
 			// the shared unit and put it back — the exact move this codebase has
 			// already documented as permanent black terrain. Dynamic samplers get
 			// a free unit of their own and never touch unit 0.
-			samplerBuilder.addDynamicSampler(atlas, "tex", "texture", "gtexture");
+			atlasTaken = samplerBuilder.addDynamicSampler(atlas, "tex", "texture", "gtexture");
 		}
 		pipeline.addGbufferOrShadowSamplers(samplerBuilder, builder, pipeline::getFlippedAfterPrepare, false, false, true, false);
 		customUniforms.mapholderToPass(uniformBuilder, this);
@@ -213,6 +216,18 @@ public class HorizonIrisProgram {
 		fogEndUniform = tryGetUniformLocation2("fogEnd");
 		irisFogStartUniform = tryGetUniformLocation2("iris_FogStart");
 		irisFogEndUniform = tryGetUniformLocation2("iris_FogEnd");
+		if (terrainMode) {
+			// Which of these a pack actually declares decides whether an override
+			// here can do anything at all. Two fixes in a row landed on names the
+			// target packs never use, and the screenshots were byte-identical —
+			// this says so directly instead of leaving it to be inferred.
+			net.irisshaders.iris.Iris.logger.info("Horizon terrain program '" + name + "': "
+				+ "atlasParams=" + atlasParamsUniform + " far=" + farUniform
+				+ " fogStart=" + fogStartUniform + " fogEnd=" + fogEndUniform
+				+ " iris_FogStart=" + irisFogStartUniform + " iris_FogEnd=" + irisFogEndUniform
+				+ " | samplers: atlas=" + atlasTaken + " normals=" + normalsTaken
+				+ " specular=" + specularTaken);
+		}
 		modelOffsetUniform = tryGetUniformLocation2("modelOffset");
 		worldYOffsetUniform = tryGetUniformLocation2("worldYOffset");
 		mircoOffsetUniform = tryGetUniformLocation2("mircoOffset");

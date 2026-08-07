@@ -58,6 +58,17 @@ neoForge {
 			systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
 		}
 
+		// Unattended shaderpack sweep: quick-plays into the test world, then
+		// applies every pack in turn and screenshots each one. Beats doing it by
+		// hand, and leaves a comparable record — same scene, same camera, one
+		// file per pack in run/screenshots/.
+		runShaderTest {
+			client()
+			programArguments.addAll '--quickPlaySingleplayer', 'asd'
+			systemProperty 'horizon.shadertest', 'true'
+			systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+		}
+
 		gameTestServer {
 			type = "gameTestServer"
 			systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id

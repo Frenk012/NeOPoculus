@@ -105,6 +105,7 @@ public final class HorizonLod {
 			return;
 		}
 		INSTANCE.registered = true;
+		HorizonShaderTest.register(); // no-op unless -Dhorizon.shadertest=true
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ChunkEvent.Load.class, INSTANCE::onChunkLoad);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ChunkEvent.Unload.class, INSTANCE::onChunkUnload);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, LevelEvent.Unload.class, INSTANCE::onLevelUnload);

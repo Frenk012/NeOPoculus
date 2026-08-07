@@ -35,8 +35,14 @@ public class CameraUniforms {
 	}
 
 	private static int getRenderDistanceInBlocks() {
-		// TODO: Should we ask the game renderer for this?
-		return client.options.getEffectiveRenderDistance() * 16;
+		// Horizon extends the real projection far plane past the vanilla render
+		// distance. A pack that knows about Distant Horizons must still see the
+		// vanilla value here — it treats `far` as the boundary where loaded chunks
+		// end and discards distant terrain nearer than it — but a pack with no dh
+		// programs has only this number to fog and linearise depth against, and
+		// the vanilla value leaves every LOD fragment past the end of its
+		// atmosphere. HorizonRuntime decides which case applies.
+		return (int) net.irisshaders.iris.horizon.HorizonRuntime.packFarPlane();
 	}
 
 	public static Vector3d getUnshiftedCameraPosition() {

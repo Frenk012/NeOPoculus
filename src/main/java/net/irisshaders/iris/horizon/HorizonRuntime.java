@@ -61,6 +61,40 @@ public final class HorizonRuntime {
 		return 0.05f;
 	}
 
+	/**
+	 * True when the active pack ships no dh program, so the voxel LOD is drawn
+	 * through the pack's own gbuffers_terrain. Such a pack has no notion of
+	 * distant terrain at all: no dhFarPlane to fog against, and no reason to
+	 * expect geometry past its render distance. Set by the renderer each frame.
+	 */
+	private static volatile boolean packUnawareOfLod;
+
+	public static void setPackUnawareOfLod(boolean unaware) {
+		packUnawareOfLod = unaware;
+	}
+
+	/**
+	 * The view distance a shaderpack should be told about, in blocks.
+	 *
+	 * <p>Horizon extends the real projection far plane well past the vanilla
+	 * render distance. A pack that knows about Distant Horizons copes with the
+	 * gap, because it fogs distant terrain against dhFarPlane and reads `far` as
+	 * the boundary where loaded chunks end — telling it anything else makes it
+	 * discard the LOD entirely, which is exactly what happened.
+	 *
+	 * <p>A pack with no dh programs has neither. It fogs and linearises depth
+	 * against `far` alone, so reporting the vanilla distance leaves every LOD
+	 * fragment beyond the end of its atmosphere — drowned in haze — and its depth
+	 * maths disagreeing with the projection actually in use. For those packs the
+	 * honest answer is the distance really being drawn.
+	 */
+	public static float packFarPlane() {
+		if (isActive() && packUnawareOfLod) {
+			return farPlane();
+		}
+		return net.minecraft.client.Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0f;
+	}
+
 	/** Effective LOD render distance in chunks. */
 	public static int renderDistanceChunks() {
 		return Math.max(2, (int) (HorizonConfig.get().getLodDistanceBlocks() / 16.0f));

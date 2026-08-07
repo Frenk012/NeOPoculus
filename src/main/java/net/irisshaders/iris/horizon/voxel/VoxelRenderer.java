@@ -257,6 +257,10 @@ public final class VoxelRenderer {
 			// than a per-pack workaround.
 			var dh = pipeline.getDHTerrainShader();
 			boolean terrainMode = dh.isEmpty();
+			// Tells the shared uniforms which view distance this pack should be
+			// given: a dh-aware pack needs the vanilla one, a dh-unaware pack needs
+			// the distance actually being drawn or its fog swallows the LOD.
+			net.irisshaders.iris.horizon.HorizonRuntime.setPackUnawareOfLod(terrainMode);
 			var terrain = terrainMode ? pipeline.getHorizonTerrainShader() : dh;
 			if (terrain.isEmpty()) {
 				return false; // nothing sensible to shade LOD with
@@ -481,6 +485,9 @@ public final class VoxelRenderer {
 		irisDepthTex = 0;
 		irisFailed = false;
 		noDhTerrainReported = false; // the next pack gets its own verdict
+		// Back to the vanilla view distance until the next pack proves it needs
+		// otherwise, so a dh-aware pack is never handed a dh-unaware pack's value.
+		net.irisshaders.iris.horizon.HorizonRuntime.setPackUnawareOfLod(false);
 	}
 
 	private long probeLast;

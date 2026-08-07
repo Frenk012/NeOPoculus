@@ -148,6 +148,19 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.MEDIUM)
 			.build();
 
+		// The escape hatch for the cost of per-cell quads. On by default because
+		// stretched block textures are the more obvious defect; off trades that back
+		// for fewer, larger quads.
+		Option<Boolean> perCell = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/per_cell_lod_textures"))
+			.setName(name("perCellLodTextures"))
+			.setTooltip(tooltip("perCellLodTextures"))
+			.setControl(TickBoxControl::new)
+			.setBinding(new GenericBinding<>(HorizonConfig::setPerCellLodTextures,
+				HorizonConfig::isPerCellLodTextures))
+			.setImpact(OptionImpact.HIGH)
+			.build();
+
 		Option<Boolean> autoClean = OptionImpl.createBuilder(Boolean.TYPE, HorizonConfigStorage.INSTANCE)
 			.setId(id("horizon/lod_auto_clean"))
 			.setName(name("lodAutoClean"))
@@ -198,6 +211,7 @@ public class HorizonEmbeddiumGui {
 			.add(saveInterval)
 			.add(serverLodDisk)
 			.add(texturedLod)
+			.add(perCell)
 			.add(autoClean)
 			.add(clearArmed)
 			.add(clearConfirm)

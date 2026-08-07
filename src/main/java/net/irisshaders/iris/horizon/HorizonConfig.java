@@ -99,6 +99,14 @@ public class HorizonConfig {
 	 * dhMaterialId branches — which only the dh program has.
 	 */
 	private boolean texturedLodUnderShaders = false;
+	/**
+	 * Emit one quad per cell instead of merging runs of identical faces.
+	 * A shaderpack's terrain program computes its own texture coordinate, so a
+	 * merged quad can only stretch one atlas slot across the run; one quad per
+	 * cell is what makes distant block textures read correctly under shaders.
+	 * Costs quads, which is why it can be turned off again.
+	 */
+	private boolean perCellLodTextures = true;
 	/** Armed state of the GUI's cache-clear action; paired with {@link #lodClearConfirm}. */
 	private boolean lodClearArmed = false;
 	/** Second half of the GUI's cache-clear action; both must be on for it to run. */
@@ -142,6 +150,7 @@ public class HorizonConfig {
 		serverLodDiskBudgetMb = clamp(parseInt(props, "serverLodDiskBudgetMb", serverLodDiskBudgetMb), 64, 65536);
 		lodAutoClean = Boolean.parseBoolean(props.getProperty("lodAutoClean", Boolean.toString(lodAutoClean)));
 		texturedLodUnderShaders = Boolean.parseBoolean(props.getProperty("texturedLodUnderShaders", Boolean.toString(texturedLodUnderShaders)));
+		perCellLodTextures = Boolean.parseBoolean(props.getProperty("perCellLodTextures", Boolean.toString(perCellLodTextures)));
 
 		if (!Files.exists(file)) {
 			save();
@@ -163,6 +172,7 @@ public class HorizonConfig {
 		props.setProperty("serverLodDiskBudgetMb", Integer.toString(serverLodDiskBudgetMb));
 		props.setProperty("lodAutoClean", Boolean.toString(lodAutoClean));
 		props.setProperty("texturedLodUnderShaders", Boolean.toString(texturedLodUnderShaders));
+		props.setProperty("perCellLodTextures", Boolean.toString(perCellLodTextures));
 		props.setProperty("maxLodVramMb", Integer.toString(maxLodVramMb));
 		props.setProperty("maxUploadBytesPerFrame", Integer.toString(maxUploadBytesPerFrame));
 
@@ -280,6 +290,14 @@ public class HorizonConfig {
 
 	public void setServerLodDiskBudgetMb(int value) {
 		this.serverLodDiskBudgetMb = clamp(value, 64, 65536);
+	}
+
+	public boolean isPerCellLodTextures() {
+		return perCellLodTextures;
+	}
+
+	public void setPerCellLodTextures(boolean value) {
+		this.perCellLodTextures = value;
 	}
 
 	public boolean isTexturedLodUnderShaders() {

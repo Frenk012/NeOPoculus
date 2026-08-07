@@ -1,5 +1,6 @@
 package net.irisshaders.iris.horizon.voxel;
 
+import net.irisshaders.iris.horizon.HorizonConfig;
 import net.irisshaders.iris.Iris;
 import org.lwjgl.system.MemoryUtil;
 
@@ -76,6 +77,12 @@ public final class VoxelMesher {
 		boolean[] usedFallback = {false};
 		var metadata = bakery.metadata();
 		int startEpoch = bakery.epoch();
+		// One quad per cell when per-cell textures are on. A shaderpack's terrain
+		// program builds its own texture coordinate in its own vertex shader, so a
+		// merged quad can only stretch one atlas slot across the whole run — the
+		// per-cell `fract` the built-in shader uses is out of reach there. Merging
+		// stays available because it is a real saving: fewer, larger quads.
+		final int cap = HorizonConfig.get().isPerCellLodTextures() ? 1 : CAP;
 
 		try {
 			for (int sxLocal = 0; sxLocal < VoxelConstants.MESH_REGION_SECTIONS && !capped; sxLocal++) {
@@ -99,12 +106,12 @@ public final class VoxelMesher {
 											continue;
 										}
 										int su = 1;
-										while (u + su < N && su < CAP && faceKey[v * N + u + su] == key) {
+										while (u + su < N && su < cap && faceKey[v * N + u + su] == key) {
 											su++;
 										}
 										int sv = 1;
 										grow:
-										while (v + sv < N && sv < CAP) {
+										while (v + sv < N && sv < cap) {
 											for (int k = 0; k < su; k++) {
 												if (faceKey[(v + sv) * N + u + k] != key) {
 													break grow;

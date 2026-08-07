@@ -160,14 +160,16 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.HIGH)
 			.build();
 
-		// Ceiling on the mesh memory the LOD may hold on the GPU. Already honoured
-		// by the renderer; it simply had no way to be reached from the game.
-		Option<Integer> vram = OptionImpl.createBuilder(Integer.TYPE, HorizonConfigStorage.INSTANCE)
-			.setId(id("horizon/vram_budget"))
-			.setName(name("vramBudget"))
-			.setTooltip(tooltip("vramBudget"))
-			.setControl(o -> new SliderControl(o, 128, 4096, 128, ControlValueFormatter.number()))
-			.setBinding(new GenericBinding<>(HorizonConfig::setMaxLodVramMb, HorizonConfig::getMaxLodVramMb))
+		// The memory ceiling the voxel store actually enforces (VoxelStore:509).
+		// maxLodVramMb looks like the obvious candidate and is NOT wired to
+		// anything, so exposing it would have shipped a slider that does nothing.
+		Option<Integer> memoryBudget = OptionImpl.createBuilder(Integer.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/memory_budget"))
+			.setName(name("memoryBudget"))
+			.setTooltip(tooltip("memoryBudget"))
+			.setControl(o -> new SliderControl(o, 64, 2048, 64, ControlValueFormatter.number()))
+			.setBinding(new GenericBinding<>(HorizonConfig::setVoxelMemoryBudgetMb,
+				HorizonConfig::getVoxelMemoryBudgetMb))
 			.setImpact(OptionImpact.MEDIUM)
 			.build();
 
@@ -236,7 +238,7 @@ public class HorizonEmbeddiumGui {
 			.add(texturedLod)
 			.add(perCell)
 			.add(vegetation)
-			.add(vram)
+			.add(memoryBudget)
 			.add(autoClean)
 			.add(clearArmed)
 			.add(clearConfirm)

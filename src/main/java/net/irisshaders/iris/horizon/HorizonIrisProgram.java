@@ -278,12 +278,6 @@ public class HorizonIrisProgram {
 		setUniform(projectionUniform, projection);
 		setUniform(projectionInverseUniform, projectionInverse);
 		setUniform(normalMatrix3fUniform, modelViewInverse.transpose3x3(normalMatrix));
-		// Horizon draws with the same projection as the rest of the world.
-		setUniform(dhProjectionUniform, projection);
-		setUniform(dhProjectionInverseUniform, projectionInverse);
-		setUniform(dhPreviousProjectionUniform, hasPreviousProjection ? previousProjection : projection);
-		previousProjection.set(projection);
-		hasPreviousProjection = true;
 
 		setUniform(mircoOffsetUniform, 0.01f);
 		setUniform(positionScaleUniform, positionScale);
@@ -296,6 +290,21 @@ public class HorizonIrisProgram {
 		samplers.update();
 		uniforms.update();
 		customUniforms.push(this);
+		// Last word on the projection, for the same reason as the distance below.
+		// The shared uniform system fills dhProjection from DHCompat, which
+		// without the real Distant Horizons mod hands back the plain gbuffer
+		// projection — vanilla far plane and all. Packs that position LOD with
+		// `dhProjection * gbufferModelView * position` (Complementary, BSL,
+		// iterationT) then clip every LOD vertex past the vanilla view distance,
+		// so the pass draws hundreds of regions that never reach a pixel. Packs
+		// that use gl_ProjectionMatrix instead (Sildur's) were unaffected, which
+		// is exactly why one pack worked and the rest showed nothing.
+		setUniform(dhProjectionUniform, projection);
+		setUniform(dhProjectionInverseUniform, projectionInverse);
+		setUniform(dhPreviousProjectionUniform, hasPreviousProjection ? previousProjection : projection);
+		previousProjection.set(projection);
+		hasPreviousProjection = true;
+
 		// Last word on distance: whatever the shared uniform system just uploaded,
 		// this program draws to the LOD far plane and the pack must fog against
 		// that. Set after the update so nothing overwrites it.

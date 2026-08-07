@@ -305,11 +305,17 @@ public class HorizonIrisProgram {
 		previousProjection.set(projection);
 		hasPreviousProjection = true;
 
-		// Last word on distance: whatever the shared uniform system just uploaded,
-		// this program draws to the LOD far plane and the pack must fog against
-		// that. Set after the update so nothing overwrites it.
+		// `far` is deliberately NOT overridden. To a pack it means the vanilla
+		// view distance — the boundary where loaded chunks end and LOD takes
+		// over — and packs use it to discard the LOD that would cover real
+		// terrain. Complementary fades it out with
+		//   color.a *= smoothstep(far * 0.4, far * 0.6, dist)
+		// and BSL discards outright below `(dither - DH_OVERDRAW - 0.75) * 16 + far`.
+		// Reporting the LOD distance here told both packs to throw away
+		// everything nearer than the whole LOD range, which is why they drew
+		// hundreds of regions and showed nothing. The LOD range belongs in
+		// dhFarPlane and dhRenderDistance, which is where packs look for it.
 		float lodFar = HorizonRuntime.farPlane();
-		setUniform(farUniform, lodFar);
 		setUniform(dhFarPlaneUniform, lodFar);
 		if (dhRenderDistanceUniform != -1) {
 			GL43C.glUniform1i(dhRenderDistanceUniform, HorizonRuntime.renderDistanceChunks());

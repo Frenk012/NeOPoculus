@@ -129,11 +129,22 @@ public class DHTerrainTransformer {
 				"    float mz = (mirco & 16u)!=0u ? mircoOffset : 0.0;\n" +
 				"    mz = (mirco & 32u)!=0u ? -mz : mz;\n" +
 				"        uint lights = meta & 0xFFu;\n" +
-				"_vert_position = (vPosition.xyz + vec3(mx, 0, mz));" +
-				"_vert_normal = irisNormals[irisExtra.y];" +
+				// irisPositionScale converts the vertex position into blocks: 1.0 for
+				// the classic engine and the DH mod, 1/16 for the voxel engine, whose
+				// positions are in sixteenths so partial shapes (slabs, fences) can be
+				// expressed. The micro-offset is applied AFTER the scale so it stays
+				// the same fraction of a block on both. Every consumer must set this
+				// uniform explicitly: a GLSL uniform defaults to 0.0, and an unset one
+				// would collapse every vertex onto the model offset.
+				"_vert_position = vec3(vPosition.xyz) * irisPositionScale + vec3(mx, 0, mz);" +
+				// Voxel cross-plant quads carry normal index 6/7; clamp so they read as
+				// up-facing instead of indexing a six-entry array out of bounds. A no-op
+				// for the classic engine and the DH mod, which only ever emit 0-5.
+				"_vert_normal = irisNormals[irisExtra.y < 6u ? irisExtra.y : 1u];" +
 				"dhMaterialId = int(irisExtra.x);" +
 				"_vert_tex_light_coord = vec2((float(lights/16u)+0.5) / 16.0, (mod(float(lights), 16.0)+0.5) / 16.0);" +
 				"_vert_color = iris_color; }");
+		addIfNotExists(root, t, tree, "irisPositionScale", Type.FLOAT32, StorageQualifier.StorageType.UNIFORM);
 		addIfNotExists(root, t, tree, "iris_color", Type.F32VEC4, StorageQualifier.StorageType.IN);
 		addIfNotExists(root, t, tree, "vPosition", Type.U32VEC4, StorageQualifier.StorageType.IN);
 		addIfNotExists(root, t, tree, "irisExtra", Type.U32VEC4, StorageQualifier.StorageType.IN);

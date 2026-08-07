@@ -41,6 +41,13 @@ public class IrisLodRenderProgram {
 	public final int modelOffsetUniform;
 	public final int worldYOffsetUniform;
 	public final int mircoOffsetUniform;
+	/**
+	 * The DH mod's vertex positions are already in blocks, so the scale is 1.0 —
+	 * but it must still be SET: the shared DH patch declares this uniform for the
+	 * voxel engine's sixteenth-block positions, and an unset GLSL uniform is 0.0,
+	 * which would collapse every vertex onto the model offset.
+	 */
+	public final int positionScaleUniform;
 	public final int modelViewUniform;
 	public final int modelViewInverseUniform;
 	public final int projectionUniform;
@@ -124,6 +131,7 @@ public class IrisLodRenderProgram {
 		modelOffsetUniform = tryGetUniformLocation2("modelOffset");
 		worldYOffsetUniform = tryGetUniformLocation2("worldYOffset");
 		mircoOffsetUniform = tryGetUniformLocation2("mircoOffset");
+		positionScaleUniform = tryGetUniformLocation2("irisPositionScale");
 		projectionUniform = tryGetUniformLocation2("iris_ProjectionMatrix");
 		projectionInverseUniform = tryGetUniformLocation2("iris_ProjectionMatrixInverse");
 		modelViewUniform = tryGetUniformLocation2("iris_ModelViewMatrix");
@@ -228,6 +236,7 @@ public class IrisLodRenderProgram {
 		setUniform(normalMatrix3fUniform, new Matrix4f(modelView).invert().transpose3x3(new Matrix3f()));
 
 		setUniform(mircoOffsetUniform, 0.01f); // 0.01 block offset
+		setUniform(positionScaleUniform, 1.0f);
 
 		// setUniform(skyLightUniform, skyLight);
 

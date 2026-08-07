@@ -45,6 +45,14 @@ public class HorizonIrisProgram {
 	public final int modelOffsetUniform;
 	public final int worldYOffsetUniform;
 	public final int mircoOffsetUniform;
+	/**
+	 * Blocks per unit of the vertex position: 1.0 for the classic engine, 1/16
+	 * for the voxel engine, whose positions are in sixteenths so partial shapes
+	 * can be expressed. Must always be set — an unset GLSL uniform is 0.0, which
+	 * would collapse every vertex onto the model offset.
+	 */
+	public final int positionScaleUniform;
+	private final float positionScale;
 	public final int modelViewUniform;
 	public final int modelViewInverseUniform;
 	public final int projectionUniform;
@@ -69,7 +77,9 @@ public class HorizonIrisProgram {
 
 	private HorizonIrisProgram(String name, BlendModeOverride override, BufferBlendOverride[] bufferBlendOverrides,
 							   String vertex, String tessControl, String tessEval, String geometry, String fragment,
-							   CustomUniforms customUniforms, IrisRenderingPipeline pipeline) {
+							   CustomUniforms customUniforms, IrisRenderingPipeline pipeline,
+							   float positionScale) {
+		this.positionScale = positionScale;
 		this.bufferBlendOverrides = bufferBlendOverrides;
 		id = GL43C.glCreateProgram();
 
@@ -135,6 +145,7 @@ public class HorizonIrisProgram {
 		modelOffsetUniform = tryGetUniformLocation2("modelOffset");
 		worldYOffsetUniform = tryGetUniformLocation2("worldYOffset");
 		mircoOffsetUniform = tryGetUniformLocation2("mircoOffset");
+		positionScaleUniform = tryGetUniformLocation2("irisPositionScale");
 		projectionUniform = tryGetUniformLocation2("iris_ProjectionMatrix");
 		projectionInverseUniform = tryGetUniformLocation2("iris_ProjectionMatrixInverse");
 		modelViewUniform = tryGetUniformLocation2("iris_ModelViewMatrix");
@@ -146,7 +157,16 @@ public class HorizonIrisProgram {
 		dhPreviousProjectionUniform = tryGetUniformLocation2("dhPreviousProjection");
 	}
 
+	/** Classic engine: vertex positions are whole blocks. */
 	public static HorizonIrisProgram createProgram(String name, ProgramSource source, CustomUniforms uniforms, IrisRenderingPipeline pipeline) {
+		return createProgram(name, source, uniforms, pipeline, 1.0f);
+	}
+
+	/**
+	 * @param positionScale blocks per unit of vertex position — 1.0 for the
+	 *                      classic engine, 1/16 for the voxel engine.
+	 */
+	public static HorizonIrisProgram createProgram(String name, ProgramSource source, CustomUniforms uniforms, IrisRenderingPipeline pipeline, float positionScale) {
 		// DISTANT_HORIZONS is defined pipeline-wide via StandardMacros when
 		// Horizon is active, so the pack source already resolves its dh
 		// #ifdef branches. Do NOT inject a raw #define here: the DH transformer
@@ -178,7 +198,8 @@ public class HorizonIrisProgram {
 		});
 
 		return new HorizonIrisProgram(name, source.getDirectives().getBlendModeOverride().orElse(null),
-			bufferOverrides.toArray(BufferBlendOverride[]::new), vertex, tessControl, tessEval, geometry, fragment, uniforms, pipeline);
+			bufferOverrides.toArray(BufferBlendOverride[]::new), vertex, tessControl, tessEval, geometry, fragment,
+			uniforms, pipeline, positionScale);
 	}
 
 	public int tryGetUniformLocation2(CharSequence name) {
@@ -244,6 +265,7 @@ public class HorizonIrisProgram {
 		hasPreviousProjection = true;
 
 		setUniform(mircoOffsetUniform, 0.01f);
+		setUniform(positionScaleUniform, positionScale);
 		if (worldYOffsetUniform != -1) setUniform(worldYOffsetUniform, 0.0f);
 		// ponytail: Horizon draws right up to the loaded-chunk boundary and
 		// masks the overlap itself, so packs get no near-clip discard. If the

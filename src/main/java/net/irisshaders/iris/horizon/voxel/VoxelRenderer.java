@@ -1,8 +1,11 @@
 package net.irisshaders.iris.horizon.voxel;
 
+import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.horizon.HorizonConfig;
+import net.irisshaders.iris.mixin.GlStateManagerAccessor;
+import net.irisshaders.iris.mixin.statelisteners.BooleanStateAccessor;
 import net.minecraft.client.Minecraft;
 import org.joml.FrustumIntersection;
 import org.joml.Matrix4f;
@@ -51,6 +54,8 @@ public final class VoxelRenderer {
 	private Object irisPipeline;
 	private int irisDepthTex;
 	private boolean irisFailed;
+	/** Logged once per pack, so the built-in fallback is never silent. */
+	private boolean noDhTerrainReported;
 	private net.irisshaders.iris.gl.framebuffer.GlFramebuffer irisFramebuffer;
 	private final Matrix4f mvp = new Matrix4f();
 	private final FrustumIntersection frustum = new FrustumIntersection();
@@ -239,12 +244,24 @@ public final class VoxelRenderer {
 			return false;
 		}
 		try {
-			var terrain = pipeline.getDHTerrainShader();
-			if (terrain.isEmpty()) {
-				return false; // nothing sensible to shade LOD with
-			}
+			// Publish the depth texture before the dh_terrain test, not after:
+			// the dhDepthTex samplers are attached to every program the pack
+			// compiles, so leaving it at 0 for a pack that ships no dh_terrain
+			// hands the whole pack a texture name of zero.
 			int depthTex = pipeline.getHorizonDepthTexture();
 			net.irisshaders.iris.horizon.HorizonRuntime.setMainDepthTex(depthTex);
+			var terrain = pipeline.getDHTerrainShader();
+			if (terrain.isEmpty()) {
+				// Say so once. This return used to be silent, which made the pack
+				// look like it had rendered through the shader path when it had
+				// actually dropped to the built-in program.
+				if (!noDhTerrainReported) {
+					noDhTerrainReported = true;
+					Iris.logger.info("Horizon: this shaderpack ships no dh_terrain program; "
+						+ "the voxel LOD will draw with the built-in program instead");
+				}
+				return false; // nothing sensible to shade LOD with
+			}
 			if (irisPipeline != pipeline || irisDepthTex != depthTex) {
 				if (irisPipeline != pipeline) {
 					onPipelineDestroyed();
@@ -278,61 +295,112 @@ public final class VoxelRenderer {
 			int prevVao = GL33C.glGetInteger(GL33C.GL_VERTEX_ARRAY_BINDING);
 			int prevFramebuffer = GL33C.glGetInteger(GL33C.GL_DRAW_FRAMEBUFFER_BINDING);
 
-			irisFramebuffer.bind();
-			GL33C.glEnable(GL33C.GL_DEPTH_TEST);
-			GL33C.glDepthFunc(GL33C.GL_LEQUAL);
-			GL33C.glDepthMask(true);
-			GL33C.glDisable(GL33C.GL_BLEND);
-			GL33C.glDisable(GL33C.GL_CULL_FACE); // winding is not outward-consistent yet
-			GL33C.glEnable(GL33C.GL_POLYGON_OFFSET_FILL);
-			// Same trick as the no-pack pass: push LOD fragments back so loaded
-			// chunks always win the depth test at the seam. The pack program has
-			// no coverage-mask discard, so this is what hides the overlap.
-			GL33C.glPolygonOffset(3.0f, 3.0f);
+			// Snapshot from GlStateManager's cache, not from the driver.
+			//
+			// The cache is what every later call is gated on. Changing depth,
+			// blend or cull with a raw glEnable/glDisable leaves vanilla and Iris
+			// believing the old value, so their next enable/disable is skipped as
+			// redundant and the driver keeps OUR value for the rest of the frame
+			// — in every program the pack runs afterwards, not only in this pass.
+			// That is how a distant-terrain pass ends up blacking out terrain that
+			// has nothing to do with LOD, and why the real Distant Horizons never
+			// does: Iris drives that pass and owns the state around it.
+			GlStateManager.DepthState depthState = GlStateManagerAccessor.getDEPTH();
+			GlStateManager.BlendState blendState = GlStateManagerAccessor.getBLEND();
+			boolean prevDepthTest = ((BooleanStateAccessor) depthState.mode).isEnabled();
+			int prevDepthFunc = depthState.func;
+			boolean prevDepthMask = depthState.mask;
+			boolean prevBlend = ((BooleanStateAccessor) blendState.mode).isEnabled();
+			// GlStateManager.CullState is package-private, so cull is the one flag
+			// read from the driver. That is sound now that every write below goes
+			// through GlStateManager: cache and driver no longer diverge.
+			boolean prevCull = GL33C.glIsEnabled(GL33C.GL_CULL_FACE);
 
-			double maxDist = HorizonConfig.get().getLodDistanceBlocks() + 192.0;
-			double maxDistSq = maxDist * maxDist;
-			float relY = (float) -camY;
-			int drawn = 0;
+			net.irisshaders.iris.horizon.HorizonIrisProgram lastBound = null;
+			try {
+				irisFramebuffer.bind();
+				GlStateManager._enableDepthTest();
+				GlStateManager._depthFunc(GL33C.GL_LEQUAL);
+				GlStateManager._depthMask(true);
+				GlStateManager._disableBlend();
+				GlStateManager._disableCull(); // winding is not outward-consistent yet
+				GlStateManager._enablePolygonOffset();
+				// Same trick as the no-pack pass: push LOD fragments back so loaded
+				// chunks always win the depth test at the seam. The pack program has
+				// no coverage-mask discard, so this is what hides the overlap.
+				GlStateManager._polygonOffset(3.0f, 3.0f);
 
-			irisTerrain.bind();
-			irisTerrain.fillUniformData(projection, modelView);
-			for (VoxelRegionMesh mesh : meshes.values()) {
-				if (!visibleNow(mesh, camX, camZ, relY, maxDistSq)) {
-					continue;
-				}
-				int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
-				float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
-				float oz = (float) ((double) VoxelRegionKey.rz(mesh.regionKey) * span - camZ);
-				irisTerrain.setModelPos(ox, relY - VoxelConstants.Y_BIAS, oz);
-				mesh.drawOpaque();
-				drawn++;
-				if (mesh.hasTranslucent()) {
-					translucentPending.add(mesh);
-				}
-			}
+				double maxDist = HorizonConfig.get().getLodDistanceBlocks() + 192.0;
+				double maxDistSq = maxDist * maxDist;
+				float relY = (float) -camY;
+				int drawn = 0;
 
-			if (!translucentPending.isEmpty()) {
-				translucentPending.sort((a, b) -> Double.compare(
-					regionDistSq(b, camX, camY, camZ), regionDistSq(a, camX, camY, camZ)));
-				irisWater.bind();
-				irisWater.fillUniformData(projection, modelView);
-				for (VoxelRegionMesh mesh : translucentPending) {
+				lastBound = irisTerrain;
+				irisTerrain.bind();
+				irisTerrain.fillUniformData(projection, modelView);
+				for (VoxelRegionMesh mesh : meshes.values()) {
+					if (!visibleNow(mesh, camX, camZ, relY, maxDistSq)) {
+						continue;
+					}
 					int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
 					float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
 					float oz = (float) ((double) VoxelRegionKey.rz(mesh.regionKey) * span - camZ);
-					irisWater.setModelPos(ox, relY - VoxelConstants.Y_BIAS, oz);
-					mesh.drawTranslucent();
+					irisTerrain.setModelPos(ox, relY - VoxelConstants.Y_BIAS, oz);
+					mesh.drawOpaque();
+					drawn++;
+					if (mesh.hasTranslucent()) {
+						translucentPending.add(mesh);
+					}
 				}
-				translucentPending.clear();
-			}
-			drawnLastFrame = drawn;
 
-			GL33C.glPolygonOffset(0.0f, 0.0f);
-			GL33C.glDisable(GL33C.GL_POLYGON_OFFSET_FILL);
-			GL33C.glBindFramebuffer(GL33C.GL_DRAW_FRAMEBUFFER, prevFramebuffer);
-			GL33C.glBindVertexArray(prevVao);
-			GL33C.glUseProgram(prevProgram);
+				if (!translucentPending.isEmpty()) {
+					translucentPending.sort((a, b) -> Double.compare(
+						regionDistSq(b, camX, camY, camZ), regionDistSq(a, camX, camY, camZ)));
+					lastBound = irisWater;
+					irisWater.bind();
+					irisWater.fillUniformData(projection, modelView);
+					for (VoxelRegionMesh mesh : translucentPending) {
+						int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
+						float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
+						float oz = (float) ((double) VoxelRegionKey.rz(mesh.regionKey) * span - camZ);
+						irisWater.setModelPos(ox, relY - VoxelConstants.Y_BIAS, oz);
+						mesh.drawTranslucent();
+					}
+					translucentPending.clear();
+				}
+				drawnLastFrame = drawn;
+			} finally {
+				// unbind() is the only thing that releases the program's blend
+				// override: bind() arms BlendModeStorage, and while it stays armed
+				// every blend change the pack makes afterwards is swallowed. This
+				// runs even when a draw threw, because a half-finished pass is
+				// exactly when leaving the state dirty does the most damage.
+				if (lastBound != null) {
+					lastBound.unbind();
+				}
+				GlStateManager._polygonOffset(0.0f, 0.0f);
+				GlStateManager._disablePolygonOffset();
+				if (prevDepthTest) {
+					GlStateManager._enableDepthTest();
+				} else {
+					GlStateManager._disableDepthTest();
+				}
+				GlStateManager._depthFunc(prevDepthFunc);
+				GlStateManager._depthMask(prevDepthMask);
+				if (prevBlend) {
+					GlStateManager._enableBlend();
+				} else {
+					GlStateManager._disableBlend();
+				}
+				if (prevCull) {
+					GlStateManager._enableCull();
+				} else {
+					GlStateManager._disableCull();
+				}
+				GL33C.glBindFramebuffer(GL33C.GL_DRAW_FRAMEBUFFER, prevFramebuffer);
+				GL33C.glBindVertexArray(prevVao);
+				GL33C.glUseProgram(prevProgram);
+			}
 			return true;
 		} catch (Throwable t) {
 			// One failure is enough: fall back to the no-pack pass for the rest
@@ -381,6 +449,7 @@ public final class VoxelRenderer {
 		irisPipeline = null;
 		irisDepthTex = 0;
 		irisFailed = false;
+		noDhTerrainReported = false; // the next pack gets its own verdict
 	}
 
 	/** Render thread. Draws every visible region mesh, sampling the photo atlas (flat color where unbaked). */
@@ -435,18 +504,31 @@ public final class VoxelRenderer {
 		int prevProgram = GL33C.glGetInteger(GL33C.GL_CURRENT_PROGRAM);
 		int prevVao = GL33C.glGetInteger(GL33C.GL_VERTEX_ARRAY_BINDING);
 		int prevArrayBuffer = GL33C.glGetInteger(GL33C.GL_ARRAY_BUFFER_BINDING);
-		int prevActiveTex = GL33C.glGetInteger(GL33C.GL_ACTIVE_TEXTURE);
-		int prevTex0 = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
-		boolean prevCull = GL33C.glIsEnabled(GL33C.GL_CULL_FACE);
-		boolean prevBlend = GL33C.glIsEnabled(GL33C.GL_BLEND);
 
-		GL33C.glEnable(GL33C.GL_DEPTH_TEST);
-		GL33C.glDepthFunc(GL33C.GL_LEQUAL);
-		GL33C.glDepthMask(true);
-		GL33C.glDisable(GL33C.GL_BLEND);
-		GL33C.glDisable(GL33C.GL_CULL_FACE); // M3: two-sided until winding is verified
-		GL33C.glEnable(GL33C.GL_POLYGON_OFFSET_FILL);
-		GL33C.glPolygonOffset(3.0f, 3.0f);
+		// Read the texture and pipeline state from GlStateManager's cache rather
+		// than from the driver. Asking the driver for GL_TEXTURE_BINDING_2D gives
+		// the binding of whatever unit happens to be active, which is not unit 0
+		// under a shaderpack — restoring that value into unit 0 evicts the block
+		// atlas, and because a raw glBindTexture leaves the cache still claiming
+		// the atlas, Iris's own bindTextureToUnit then skips the rebind as
+		// redundant and the atlas never comes back. That is the permanent black
+		// terrain, and it reaches loaded chunks because unit 0 is shared.
+		int prevActiveUnit = GlStateManagerAccessor.getActiveTexture();
+		int prevTex0 = GlStateManagerAccessor.getTEXTURES()[0].binding;
+		GlStateManager.DepthState depthState = GlStateManagerAccessor.getDEPTH();
+		boolean prevDepthTest = ((BooleanStateAccessor) depthState.mode).isEnabled();
+		int prevDepthFunc = depthState.func;
+		boolean prevDepthMask = depthState.mask;
+		boolean prevCull = GL33C.glIsEnabled(GL33C.GL_CULL_FACE);
+		boolean prevBlend = ((BooleanStateAccessor) GlStateManagerAccessor.getBLEND().mode).isEnabled();
+
+		GlStateManager._enableDepthTest();
+		GlStateManager._depthFunc(GL33C.GL_LEQUAL);
+		GlStateManager._depthMask(true);
+		GlStateManager._disableBlend();
+		GlStateManager._disableCull(); // M3: two-sided until winding is verified
+		GlStateManager._enablePolygonOffset();
+		GlStateManager._polygonOffset(3.0f, 3.0f);
 
 		int[] prevDrawBuffers = null;
 		int boundFbo = GL33C.glGetInteger(GL33C.GL_DRAW_FRAMEBUFFER_BINDING);
@@ -468,14 +550,13 @@ public final class VoxelRenderer {
 			}
 		}
 
-		GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
-		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, maskTexture);
-		int prevTex1 = 0;
+		GlStateManager._activeTexture(GL33C.GL_TEXTURE0);
+		GlStateManager._bindTexture(maskTexture);
+		int prevTex1 = GlStateManagerAccessor.getTEXTURES()[1].binding;
 		if (bakery.atlasTexture() != 0) {
-			GL33C.glActiveTexture(GL33C.GL_TEXTURE1);
-			prevTex1 = GL33C.glGetInteger(GL33C.GL_TEXTURE_BINDING_2D);
-			GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, bakery.atlasTexture());
-			GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
+			GlStateManager._activeTexture(GL33C.GL_TEXTURE1);
+			GlStateManager._bindTexture(bakery.atlasTexture());
+			GlStateManager._activeTexture(GL33C.GL_TEXTURE0);
 		}
 		shader.bind();
 		shader.setFrame(mvpArray, fogColor, fogStart, fogEnd, skyFactor);
@@ -523,21 +604,32 @@ public final class VoxelRenderer {
 		if (prevDrawBuffers != null) {
 			GL33C.glDrawBuffers(prevDrawBuffers);
 		}
-		GL33C.glPolygonOffset(0.0f, 0.0f);
-		GL33C.glDisable(GL33C.GL_POLYGON_OFFSET_FILL);
+		GlStateManager._polygonOffset(0.0f, 0.0f);
+		GlStateManager._disablePolygonOffset();
+		if (prevDepthTest) {
+			GlStateManager._enableDepthTest();
+		} else {
+			GlStateManager._disableDepthTest();
+		}
+		GlStateManager._depthFunc(prevDepthFunc);
+		GlStateManager._depthMask(prevDepthMask);
 		if (prevCull) {
-			GL33C.glEnable(GL33C.GL_CULL_FACE);
+			GlStateManager._enableCull();
+		} else {
+			GlStateManager._disableCull();
 		}
 		if (prevBlend) {
-			GL33C.glEnable(GL33C.GL_BLEND);
+			GlStateManager._enableBlend();
+		} else {
+			GlStateManager._disableBlend();
 		}
 		if (bakery.atlasTexture() != 0) {
-			GL33C.glActiveTexture(GL33C.GL_TEXTURE1);
-			GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prevTex1);
+			GlStateManager._activeTexture(GL33C.GL_TEXTURE1);
+			GlStateManager._bindTexture(prevTex1);
 		}
-		GL33C.glActiveTexture(GL33C.GL_TEXTURE0);
-		GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, prevTex0);
-		GL33C.glActiveTexture(prevActiveTex);
+		GlStateManager._activeTexture(GL33C.GL_TEXTURE0);
+		GlStateManager._bindTexture(prevTex0);
+		GlStateManager._activeTexture(GL33C.GL_TEXTURE0 + prevActiveUnit);
 		GL33C.glBindVertexArray(prevVao);
 		GL33C.glBindBuffer(GL33C.GL_ARRAY_BUFFER, prevArrayBuffer);
 		GL33C.glUseProgram(prevProgram);

@@ -68,6 +68,8 @@ public class HorizonIrisProgram {
 	private final String terrainProbe;
 	public final int atlasParamsUniform;
 	public final int entityIdsUniform;
+	public final int maskRelUniform;
+	public final int maskTexelsUniform;
 	public final int alphaTestUniform;
 	public final int fogStartUniform;
 	public final int fogEndUniform;
@@ -107,7 +109,8 @@ public class HorizonIrisProgram {
 	private HorizonIrisProgram(String name, BlendModeOverride override, BufferBlendOverride[] bufferBlendOverrides,
 							   String vertex, String tessControl, String tessEval, String geometry, String fragment,
 							   CustomUniforms customUniforms, IrisRenderingPipeline pipeline,
-							   float positionScale, boolean terrainMode, java.util.function.IntSupplier atlas) {
+							   float positionScale, boolean terrainMode, java.util.function.IntSupplier atlas,
+							   java.util.function.IntSupplier chunkMask) {
 		this.positionScale = positionScale;
 		this.terrainMode = terrainMode;
 		this.bufferBlendOverrides = bufferBlendOverrides;
@@ -217,6 +220,9 @@ public class HorizonIrisProgram {
 			// maps, and sampling those with a photo-atlas coordinate reads whatever
 			// LabPBR data sits at that spot — random normals and shininess. A flat
 			// normal and zero specular say "plain surface" instead.
+			if (chunkMask != null) {
+				samplerBuilder.addDynamicSampler(chunkMask, "horizon_chunkMask");
+			}
 			normalsTaken = samplerBuilder.addDynamicSampler(HorizonIrisProgram::flatNormalTexture, "normals");
 			specularTaken = samplerBuilder.addDynamicSampler(HorizonIrisProgram::zeroSpecularTexture, "specular");
 		}
@@ -228,6 +234,8 @@ public class HorizonIrisProgram {
 
 		atlasParamsUniform = tryGetUniformLocation2("horizon_atlasParams");
 		entityIdsUniform = tryGetUniformLocation2("horizon_entityIds");
+		maskRelUniform = tryGetUniformLocation2("horizon_maskRel");
+		maskTexelsUniform = tryGetUniformLocation2("horizon_maskTexels");
 		alphaTestUniform = tryGetUniformLocation2("iris_currentAlphaTest");
 		fogStartUniform = tryGetUniformLocation2("fogStart");
 		fogEndUniform = tryGetUniformLocation2("fogEnd");
@@ -282,17 +290,19 @@ public class HorizonIrisProgram {
 	 */
 	public static HorizonIrisProgram createTerrainProgram(String name, ProgramSource source, CustomUniforms uniforms,
 														  IrisRenderingPipeline pipeline, float positionScale,
-														  java.util.function.IntSupplier atlas) {
-		return createProgram(name, source, uniforms, pipeline, positionScale, true, atlas);
+														  java.util.function.IntSupplier atlas,
+														  java.util.function.IntSupplier chunkMask) {
+		return createProgram(name, source, uniforms, pipeline, positionScale, true, atlas, chunkMask);
 	}
 
 	public static HorizonIrisProgram createProgram(String name, ProgramSource source, CustomUniforms uniforms, IrisRenderingPipeline pipeline, float positionScale) {
-		return createProgram(name, source, uniforms, pipeline, positionScale, false, null);
+		return createProgram(name, source, uniforms, pipeline, positionScale, false, null, null);
 	}
 
 	private static HorizonIrisProgram createProgram(String name, ProgramSource source, CustomUniforms uniforms,
 													IrisRenderingPipeline pipeline, float positionScale,
-													boolean terrainMode, java.util.function.IntSupplier atlas) {
+													boolean terrainMode, java.util.function.IntSupplier atlas,
+													java.util.function.IntSupplier chunkMask) {
 		// DISTANT_HORIZONS is defined pipeline-wide via StandardMacros when
 		// Horizon is active, so the pack source already resolves its dh
 		// #ifdef branches. Do NOT inject a raw #define here: the DH transformer
@@ -341,7 +351,7 @@ public class HorizonIrisProgram {
 
 		return new HorizonIrisProgram(name, source.getDirectives().getBlendModeOverride().orElse(null),
 			bufferOverrides.toArray(BufferBlendOverride[]::new), vertex, tessControl, tessEval, geometry, fragment,
-			uniforms, pipeline, positionScale, terrainMode, atlas);
+			uniforms, pipeline, positionScale, terrainMode, atlas, chunkMask);
 	}
 
 	public int tryGetUniformLocation2(CharSequence name) {
@@ -429,6 +439,20 @@ public class HorizonIrisProgram {
 			return;
 		}
 		GL43C.glUniform1fv(entityIdsUniform, ids);
+	}
+
+	/**
+	 * Where the per-chunk coverage mask sits relative to the camera, so the
+	 * fragment stage can cut distant terrain wherever a real chunk is loaded.
+	 * Passing 0 texels disables the cut.
+	 */
+	public void setChunkMask(float relX, float relZ, float texels) {
+		if (maskRelUniform != -1) {
+			GL43C.glUniform2f(maskRelUniform, relX, relZ);
+		}
+		if (maskTexelsUniform != -1) {
+			GL43C.glUniform1f(maskTexelsUniform, texels);
+		}
 	}
 
 	/** Atlas geometry for the texture coordinate: slots per row, and slot size in UV. */

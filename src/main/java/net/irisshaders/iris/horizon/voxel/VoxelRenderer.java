@@ -296,7 +296,7 @@ public final class VoxelRenderer {
 					irisTerrain = terrainMode
 						? net.irisshaders.iris.horizon.HorizonIrisProgram.createTerrainProgram(
 						"horizon_voxel_terrain", terrain.get(), pipeline.getCustomUniforms(), pipeline,
-						1.0f / 16.0f, bakery::atlasTexture)
+						1.0f / 16.0f, bakery::atlasTexture, () -> maskTexture)
 						: net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
 						"horizon_voxel_terrain", terrain.get(), pipeline.getCustomUniforms(), pipeline, 1.0f / 16.0f);
 				}
@@ -308,7 +308,7 @@ public final class VoxelRenderer {
 					irisWater = terrainMode
 						? net.irisshaders.iris.horizon.HorizonIrisProgram.createTerrainProgram(
 						"horizon_voxel_water", terrain.get(), pipeline.getCustomUniforms(), pipeline,
-						1.0f / 16.0f, bakery::atlasTexture)
+						1.0f / 16.0f, bakery::atlasTexture, () -> maskTexture)
 						: net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
 						"horizon_voxel_water", water.orElse(terrain.get()),
 						pipeline.getCustomUniforms(), pipeline, 1.0f / 16.0f);
@@ -322,6 +322,19 @@ public final class VoxelRenderer {
 
 			mvp.set(projection).mul(modelView);
 			frustum.set(mvp);
+
+			// The coverage mask is what stops distant terrain drawing over the
+			// loaded world. The built-in path has always refreshed it here; the
+			// pack paths never did, because a dh program cuts by distance instead.
+			// A terrain program has no such notion, so it needs the real thing.
+			if (terrainMode) {
+				Minecraft mcm = Minecraft.getInstance();
+				if (mcm.level != null) {
+					updateChunkMask(mcm.level, Math.floorDiv((int) Math.floor(camX), 16),
+						Math.floorDiv((int) Math.floor(camZ), 16),
+						mcm.options.getEffectiveRenderDistance() + 2);
+				}
+			}
 
 			int prevProgram = GL33C.glGetInteger(GL33C.GL_CURRENT_PROGRAM);
 			int prevVao = GL33C.glGetInteger(GL33C.GL_VERTEX_ARRAY_BINDING);
@@ -381,6 +394,10 @@ public final class VoxelRenderer {
 				if (entityIds != null) {
 					irisTerrain.setEntityIds(entityIds);
 				}
+				if (terrainMode) {
+					irisTerrain.setChunkMask((float) (camX / 16.0 - maskOriginX),
+						(float) (camZ / 16.0 - maskOriginZ), maskTexture != 0 ? MASK_SIZE : 0);
+				}
 				for (VoxelRegionMesh mesh : meshes.values()) {
 					if (!visibleNow(mesh, camX, camZ, relY, maxDistSq)) {
 						continue;
@@ -407,6 +424,10 @@ public final class VoxelRenderer {
 					irisWater.setAtlasParams(bakery.atlasSlotsPerRow(), bakery.atlasSize());
 					if (entityIds != null) {
 						irisWater.setEntityIds(entityIds);
+					}
+					if (terrainMode) {
+						irisWater.setChunkMask((float) (camX / 16.0 - maskOriginX),
+							(float) (camZ / 16.0 - maskOriginZ), maskTexture != 0 ? MASK_SIZE : 0);
 					}
 					for (VoxelRegionMesh mesh : translucentPending) {
 						int span = VoxelRegionKey.regionSpanBlocks(mesh.level);

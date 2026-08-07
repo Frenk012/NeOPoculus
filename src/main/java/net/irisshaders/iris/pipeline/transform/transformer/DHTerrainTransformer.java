@@ -56,6 +56,10 @@ public class DHTerrainTransformer {
 			CommonTransformer.replaceGlMultiTexCoordBounded(t, root, 4, 7);
 		}
 
+		if (textured && parameters.type.glShaderType == ShaderType.FRAGMENT) {
+			injectChunkMaskDiscard(t, tree, root);
+		}
+
 		if (textured && parameters.type.glShaderType == ShaderType.VERTEX) {
 			// A terrain program identifies blocks through mc_Entity.x, matching it
 			// against the ids the pack declares in block.properties — Aurora tests
@@ -194,7 +198,8 @@ public class DHTerrainTransformer {
 				// means "take the photo as it is"; the alpha still carries
 				// translucency.
 				(textured
-					? "_vert_color = irisTexInfo.x != 0u ? vec4(1.0, 1.0, 1.0, iris_color.a) : iris_color; }"
+					? "_horizon_relPos = modelOffset + _vert_position;"
+					+ "_vert_color = irisTexInfo.x != 0u ? vec4(1.0, 1.0, 1.0, iris_color.a) : iris_color; }"
 					: "_vert_color = iris_color; }"));
 		addIfNotExists(root, t, tree, "irisPositionScale", Type.FLOAT32, StorageQualifier.StorageType.UNIFORM);
 		addIfNotExists(root, t, tree, "iris_color", Type.F32VEC4, StorageQualifier.StorageType.IN);
@@ -225,9 +230,41 @@ public class DHTerrainTransformer {
 	 * vertices in the ring order (0,0) (1,0) (1,1) (0,1), so the low two bits of
 	 * {@code gl_VertexID} are the corner.
 	 */
+	/**
+	 * Cuts distant terrain wherever a real chunk is loaded.
+	 *
+	 * <p>Both other paths already have this and only the terrain path lacked it.
+	 * The built-in shader samples the same per-chunk coverage mask; a dh program
+	 * does it a different way, discarding anything nearer than {@code far},
+	 * because it knows it is drawing distant terrain. A gbuffers_terrain program
+	 * knows nothing of the sort — to it this is ordinary geometry — so with no
+	 * cutoff the LOD drew straight over the loaded world: smeared ground where
+	 * real block textures should be, and slabs of distant terrain standing up
+	 * through it.
+	 *
+	 * <p>Dithered against a hash of the fragment coordinate rather than cut hard,
+	 * so the boundary breaks up along chunk edges instead of showing a seam.
+	 */
+	private static void injectChunkMaskDiscard(ASTParser t, TranslationUnit tree, Root root) {
+		tree.parseAndInjectNodes(t, ASTInjectionPoint.BEFORE_FUNCTIONS,
+			"in vec3 _horizon_relPos;",
+			"uniform sampler2D horizon_chunkMask;",
+			"uniform vec2 horizon_maskRel;",
+			"uniform float horizon_maskTexels;",
+			"void _horizon_mask_cut() {" +
+				"    if (horizon_maskTexels <= 0.0) return;\n" +
+				"    vec2 muv = (_horizon_relPos.xz / 16.0 + horizon_maskRel) / horizon_maskTexels;\n" +
+				"    if (muv.x <= 0.0 || muv.x >= 1.0 || muv.y <= 0.0 || muv.y >= 1.0) return;\n" +
+				"    float covered = texture(horizon_chunkMask, muv).r;\n" +
+				"    float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n" +
+				"    if (covered > mix(0.3, 0.7, n)) discard; }");
+		tree.prependMainFunctionBody(t, "_horizon_mask_cut();");
+	}
+
 	private static void injectAtlasUv(ASTParser t, TranslationUnit tree, Root root) {
 		tree.parseAndInjectNodes(t, ASTInjectionPoint.BEFORE_FUNCTIONS,
 			"vec2 _horizon_uv;",
+			"out vec3 _horizon_relPos;",
 			"float _horizon_entity;",
 			// 16 entries: the material byte the mesher writes is a small enum, and
 			// the clamp keeps a malformed one from reading past the array.

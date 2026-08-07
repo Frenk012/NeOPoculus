@@ -34,3 +34,6 @@ run/
 
 # third-party mod jars kept locally for compatibility testing (not part of the project)
 libs/ModToDismantle/
+
+# local dedicated-server test instance
+run-server/

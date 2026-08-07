@@ -43,6 +43,10 @@ neoForge {
 			server()
 			programArgument '--nogui'
 			systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+			// Its own directory: sharing run/ with the client would put both on the
+			// same world save, the same config and the same horizon-lod cache, which
+			// is exactly the confusion a server test is meant to rule out.
+			gameDirectory = file('run-server')
 		}
 
 		gameTestServer {

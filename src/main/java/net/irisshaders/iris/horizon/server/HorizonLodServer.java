@@ -164,9 +164,12 @@ public final class HorizonLodServer {
 			src.sendFailure(Component.literal("Horizon: a LOD generation is already running — /horizon lod status"));
 			return 0;
 		}
-		if (engineOrNull() == null) {
+		// A null client engine is NOT an error on a dedicated server: it is the
+		// normal case, and it means the generator targets the server's own store.
+		// Only refuse when neither residency is available.
+		if (engineOrNull() == null && serverStores(src.getServer()) == null) {
 			src.sendFailure(Component.literal(
-				"Horizon: the voxel LOD engine is not active for this world"));
+				"Horizon: no LOD residency available for this world"));
 			return 0;
 		}
 		LodGenerator generator = factory.apply(src);

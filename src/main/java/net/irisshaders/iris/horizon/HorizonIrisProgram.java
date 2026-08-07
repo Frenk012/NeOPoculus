@@ -52,6 +52,16 @@ public class HorizonIrisProgram {
 	 * would collapse every vertex onto the model offset.
 	 */
 	public final int positionScaleUniform;
+	/**
+	 * Overridden AFTER the uniform system runs, not through it: `far` is a
+	 * PER_FRAME uniform computed once per frame, so by the time this program
+	 * uploads, the cached vanilla render distance is already in place. Packs fog
+	 * their LOD against `far`, so leaving it at a few hundred blocks fogs terrain
+	 * ten times further out into a solid wall.
+	 */
+	public final int farUniform;
+	public final int dhFarPlaneUniform;
+	public final int dhRenderDistanceUniform;
 	private final float positionScale;
 	public final int modelViewUniform;
 	public final int modelViewInverseUniform;
@@ -154,6 +164,9 @@ public class HorizonIrisProgram {
 		worldYOffsetUniform = tryGetUniformLocation2("worldYOffset");
 		mircoOffsetUniform = tryGetUniformLocation2("mircoOffset");
 		positionScaleUniform = tryGetUniformLocation2("irisPositionScale");
+		farUniform = tryGetUniformLocation2("far");
+		dhFarPlaneUniform = tryGetUniformLocation2("dhFarPlane");
+		dhRenderDistanceUniform = tryGetUniformLocation2("dhRenderDistance");
 		projectionUniform = tryGetUniformLocation2("iris_ProjectionMatrix");
 		projectionInverseUniform = tryGetUniformLocation2("iris_ProjectionMatrixInverse");
 		modelViewUniform = tryGetUniformLocation2("iris_ModelViewMatrix");
@@ -281,12 +294,16 @@ public class HorizonIrisProgram {
 		setUniform(clipDistanceUniform, 0.0f);
 
 		samplers.update();
-		HorizonRuntime.beginLodUniformUpload();
-		try {
-			uniforms.update();
-			customUniforms.push(this);
-		} finally {
-			HorizonRuntime.endLodUniformUpload();
+		uniforms.update();
+		customUniforms.push(this);
+		// Last word on distance: whatever the shared uniform system just uploaded,
+		// this program draws to the LOD far plane and the pack must fog against
+		// that. Set after the update so nothing overwrites it.
+		float lodFar = HorizonRuntime.farPlane();
+		setUniform(farUniform, lodFar);
+		setUniform(dhFarPlaneUniform, lodFar);
+		if (dhRenderDistanceUniform != -1) {
+			GL43C.glUniform1i(dhRenderDistanceUniform, HorizonRuntime.renderDistanceChunks());
 		}
 		images.update();
 	}

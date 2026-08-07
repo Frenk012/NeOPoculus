@@ -204,7 +204,17 @@ public class HorizonIrisProgram {
 			// the shared unit and put it back — the exact move this codebase has
 			// already documented as permanent black terrain. Dynamic samplers get
 			// a free unit of their own and never touch unit 0.
-			atlasTaken = samplerBuilder.addDynamicSampler(atlas, "tex", "texture", "gtexture");
+			// Bound with an explicit sampler object that has mipmapping off. The
+			// built-in shader controls its own mip level with textureGrad; a pack
+			// samples with automatic derivatives plus its own bias — Kappa uses
+			// texture(gtexture, uv, MipBias) — and our stretched-over-a-quad
+			// coordinate pushes that to coarse levels where neighbouring slots of
+			// the 2048px atlas bleed into each other. A sampler object overrides
+			// the texture's parameters only on the unit it is bound to, so this
+			// stays confined to the pack path and leaves the built-in one, which
+			// uses the mips correctly, untouched.
+			atlasTaken = samplerBuilder.addDynamicSampler(TextureType.TEXTURE_2D, atlas,
+				net.irisshaders.iris.gl.sampler.GlSampler.LINEAR, "tex", "texture", "gtexture");
 		}
 		pipeline.addGbufferOrShadowSamplers(samplerBuilder, builder, pipeline::getFlippedAfterPrepare, false, false, true, false);
 		customUniforms.mapholderToPass(uniformBuilder, this);

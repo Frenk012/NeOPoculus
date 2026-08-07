@@ -32,6 +32,17 @@ public final class ClientLodInstall {
 	private final int[] biomeRemap;
 	private final int paletteVersion;
 	private int installedSections;
+	private long installedBytes;
+	private boolean capLogged;
+
+	/**
+	 * Ceilings on what one session will accept from a server. A well-behaved
+	 * server sends far less: the whole 300-block test world was 25 files and
+	 * 5 MB. These exist so a hostile or broken server cannot grow the client's
+	 * disk without bound — the worst it can still do is waste this much.
+	 */
+	private static final int MAX_SECTIONS_PER_SESSION = 200_000;
+	private static final long MAX_BYTES_PER_SESSION = 512L * 1024L * 1024L;
 
 	private ClientLodInstall(int[] stateRemap, int[] biomeRemap, int paletteVersion) {
 		this.stateRemap = stateRemap;
@@ -143,6 +154,15 @@ public final class ClientLodInstall {
 		if (store == null || encoded == null || encoded.length == 0) {
 			return false;
 		}
+		if (installedSections >= MAX_SECTIONS_PER_SESSION || installedBytes >= MAX_BYTES_PER_SESSION) {
+			if (!capLogged) {
+				capLogged = true;
+				Iris.logger.warn("Horizon: refusing further server LOD this session — "
+					+ installedSections + " sections / " + (installedBytes >> 20)
+					+ " MB already accepted");
+			}
+			return false;
+		}
 		int level = SectionKey.level(sectionKey);
 		if (level < 0 || level > VoxelConstants.MAX_LEVEL) {
 			return false; // a key we could not have produced ourselves
@@ -165,6 +185,7 @@ public final class ClientLodInstall {
 			section.writeBatch(0, 0, 0, n, n, n, cells, 0, n, n * n);
 			store.markDirty(sectionKey);
 			installedSections++;
+			installedBytes += encoded.length;
 			return true;
 		} catch (Throwable t) {
 			Iris.logger.error("Horizon: failed to install a server LOD section", t);

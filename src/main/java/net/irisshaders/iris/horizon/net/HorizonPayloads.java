@@ -28,8 +28,12 @@ public final class HorizonPayloads {
 	/** Bumped whenever the meaning of any payload changes; mismatched peers simply do not sync. */
 	public static final String PROTOCOL_VERSION = "1";
 
-	/** Hard ceiling on a palette blob (16 MB); far above any real palette, far below a memory attack. */
-	public static final int MAX_PALETTE_BYTES = 16 * 1024 * 1024;
+	/**
+	 * Hard ceiling on a palette blob. A real one is tiny — the test server's was
+	 * 3990 bytes for 343 states — so 4 MB is three orders of magnitude of slack
+	 * while keeping the decompression bound small.
+	 */
+	public static final int MAX_PALETTE_BYTES = 4 * 1024 * 1024;
 	/** Hard ceiling on one region-data fragment. */
 	public static final int MAX_FRAGMENT_BYTES = 64 * 1024;
 

@@ -281,7 +281,7 @@ final class VoxelSectionCodec {
 	}
 
 	private static void decodeBitpack(ByteBuffer buf, long[] dst) {
-		int n = readVarInt(buf);
+		int n = checkedPaletteSize(readVarInt(buf));
 		long[] palette = new long[n];
 		for (int i = 0; i < n; i++) {
 			palette[i] = buf.getLong();
@@ -307,22 +307,45 @@ final class VoxelSectionCodec {
 	}
 
 	private static void decodeRle(ByteBuffer buf, long[] dst) {
-		int n = readVarInt(buf);
+		int n = checkedPaletteSize(readVarInt(buf));
 		long[] palette = new long[n];
 		for (int i = 0; i < n; i++) {
 			palette[i] = buf.getLong();
 		}
 		int runCount = readVarInt(buf);
+		if (runCount < 0 || runCount > CELLS) {
+			throw new IllegalArgumentException("run count out of range: " + runCount);
+		}
 		int pos = 0;
 		for (int r = 0; r < runCount; r++) {
 			int localIdx = readVarInt(buf);
 			int runLen = readVarInt(buf);
+			if (localIdx < 0 || localIdx >= n || runLen <= 0 || runLen > CELLS - pos) {
+				throw new IllegalArgumentException("malformed RLE run");
+			}
 			Arrays.fill(dst, pos, pos + runLen, palette[localIdx]);
 			pos += runLen;
 		}
 		if (pos != CELLS) {
 			throw new IllegalArgumentException("RLE covered " + pos + " cells, expected " + CELLS);
 		}
+	}
+
+	/**
+	 * Validates a decoded palette size before it becomes an allocation.
+	 *
+	 * <p>These payloads used to come only from files this code wrote, so the
+	 * length was implicitly trusted; they now also arrive from a server over the
+	 * network. An unchecked size lets a crafted payload request an array of
+	 * billions of longs, and the resulting OutOfMemoryError is an Error, not a
+	 * RuntimeException — so it escapes the decode path's own recovery and takes
+	 * the process down. A section can hold at most one distinct value per cell.
+	 */
+	private static int checkedPaletteSize(int n) {
+		if (n <= 0 || n > CELLS) {
+			throw new IllegalArgumentException("palette size out of range: " + n);
+		}
+		return n;
 	}
 
 	// --- Census helper --------------------------------------------------------

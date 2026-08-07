@@ -127,10 +127,35 @@ distance**, then turn off **Per-cell LOD textures**.
 
 ## Compatibility fixes
 
-These are fixes to things that were broken before, not new features:
+These are fixes to things that were broken before, not new features.
 
-- **Sodium API shim** — mods written against Sodium's public API (such as Flerovium) load on
-  the Embeddium stack instead of failing with `NoClassDefFoundError`.
+### Mods built against Sodium's API
+
+A great many rendering mods are written against **Sodium's public API**. On a NeoForge setup
+that runs Embeddium instead, those classes do not exist, and such a mod dies at load with
+`NoClassDefFoundError` before you ever reach the main menu.
+
+This fork ships a stand-in for that API — colour and normal helpers, matrix and memory
+intrinsics, sprite utilities, and the common vertex formats and attributes — so those mods
+load and run. They render through the ordinary path rather than Sodium's fast one, which is
+the correct outcome on this stack: the fast path politely reports "not available" and a
+well-behaved mod falls back on its own.
+
+Two honest caveats. A mod that *demands* the fast path instead of asking for it will still
+refuse to run — the API is designed with both a "try" and a "must have" entry point, and only
+the first can degrade gracefully. And only **Flerovium** has been verified end to end; other
+Sodium-API mods are likely to work but are untested. If one does not, a report on Discord or
+the issue tracker is genuinely useful.
+
+### LittleTiles
+
+**[LittleTiles](https://www.curseforge.com/minecraft/mc-mods/littletiles)** renders correctly
+under Embeddium, translucent tiles included — glass structures show properly instead of
+disappearing or rendering opaque — and faces are re-culled correctly when you edit a
+structure, so tiles do not leave holes or stale surfaces behind after a change.
+
+### Platforms and drivers
+
 - **macOS** — the bundled AcceleratedRendering used to crash the game natively while loading a
   world on hardware with no OpenGL compute support, which includes every Mac. It is now
   detected and switched off transparently, falling back to vanilla rendering.
@@ -138,8 +163,6 @@ These are fixes to things that were broken before, not new features:
   installed.
 - **Stricter OpenGL drivers** — the game no longer refuses to launch on drivers reporting a GL
   3.2 core context while exposing 4.x through extensions.
-- **LittleTiles** — tiles, including glass and other translucent ones, render correctly under
-  Embeddium, with correct face culling when a structure is edited.
 - **Entity flicker** — entities, block entities, your held item and your arm no longer blink
   out while moving.
 

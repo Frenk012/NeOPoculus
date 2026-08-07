@@ -132,6 +132,14 @@ public class HorizonIrisProgram {
 		ProgramUniforms.Builder uniformBuilder = ProgramUniforms.builder(name, id);
 		ProgramSamplers.Builder samplerBuilder = ProgramSamplers.builder(id, IrisSamplers.WORLD_RESERVED_TEXTURE_UNITS);
 		CommonUniforms.addDynamicUniforms(uniformBuilder, FogMode.PER_VERTEX);
+		// The DH distance uniforms (dhFarPlane, dhNearPlane, dhRenderDistance)
+		// live in generalCommonUniforms, which only addNonDynamicUniforms calls —
+		// so this program never registered them and they stayed 0.0. Packs that
+		// compute their LOD fog from dhFarPlane then saturate it everywhere,
+		// which is why some rendered the LOD as nothing but fog while packs using
+		// a different formula looked correct.
+		CommonUniforms.generalCommonUniforms(uniformBuilder, pipeline.getFrameUpdateNotifier(),
+			pipeline.getPackDirectives());
 		customUniforms.assignTo(uniformBuilder);
 		BuiltinReplacementUniforms.addBuiltinReplacementUniforms(uniformBuilder);
 		ProgramImages.Builder builder = ProgramImages.builder(id);

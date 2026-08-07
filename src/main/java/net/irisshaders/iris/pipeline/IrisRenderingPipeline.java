@@ -1317,6 +1317,11 @@ public class IrisRenderingPipeline implements WorldRenderingPipeline, ShaderRend
 		return embeddiumPrograms;
 	}
 
+	/** The pack's directives; the Horizon LOD program needs them for the DH distance uniforms. */
+	public PackDirectives getPackDirectives() {
+		return packDirectives;
+	}
+
 	@Override
 	public FrameUpdateNotifier getFrameUpdateNotifier() {
 		return updateNotifier;

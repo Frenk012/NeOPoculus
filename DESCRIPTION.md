@@ -11,6 +11,8 @@ options screen, Embeddium integration — is theirs, and it all still works here
 What this fork adds is **Horizon**: a built-in extended-distance terrain system, plus a set of
 compatibility fixes for mods and platforms that previously crashed or rendered nothing.
 
+**[Discord](https://discord.gg/6WADV66Frv)** · **[Source](https://github.com/Frenk012/NeOPoculus)** · **[Report a bug](https://github.com/Frenk012/NeOPoculus/issues)**
+
 ---
 
 ## Horizon — terrain beyond the view distance
@@ -170,6 +172,18 @@ them.
 
 ---
 
+## Support and bug reports
+
+- **[Discord](https://discord.gg/6WADV66Frv)** — questions, help, shader pack reports
+- **[GitHub issues](https://github.com/Frenk012/NeOPoculus/issues)** — bugs and crashes
+- **[Source code](https://github.com/Frenk012/NeOPoculus)**
+
+Reporting a rendering problem is far more useful with the **shader pack name and version**,
+your **`latest.log`**, and whether the problem still happens with Horizon LOD turned off —
+that last one alone separates a Horizon bug from a shader-stack bug.
+
+---
+
 ## Credits and licence
 
 This mod stands on other people's work:
@@ -192,12 +206,44 @@ Licensed under **LGPL-3.0**, as inherited from Iris.
 ---
 
 <!--
-BEFORE PUBLISHING — replace or remove:
-  * Add screenshots. The strongest pair is the same view with Horizon off and on, and one
-    close-up showing the seam with loaded chunks. Both platforms render Markdown images:
-    ![caption](https://url/to/image.png)
-  * Add the source repository link once the branch is pushed.
-  * Confirm the version and Minecraft/NeoForge ranges against gradle.properties at release.
-  * Modrinth: this file can be pasted into the Description tab as-is.
-    CurseForge: its editor accepts Markdown but strips HTML comments like this one.
+BEFORE PUBLISHING
+=================
+
+1. THE SIDEBAR LINK BUTTONS DO NOT COME FROM THIS FILE.
+   Both sites build those blocks from fields in the project settings, not from the
+   description text. The links above are for people reading the page; the buttons have to
+   be entered separately, or they simply will not appear.
+
+   Modrinth — Settings > Links:
+     Source code   https://github.com/Frenk012/NeOPoculus
+     Issue tracker https://github.com/Frenk012/NeOPoculus/issues
+     Discord       https://discord.gg/6WADV66Frv          (Settings > Links > Discord invite)
+
+   CurseForge — Project > Settings > General, "Links" section:
+     Source        https://github.com/Frenk012/NeOPoculus
+     Issues        https://github.com/Frenk012/NeOPoculus/issues
+     Discord       https://discord.gg/6WADV66Frv
+   CurseForge only shows the Issues button once the field is filled AND the repository has
+   issues enabled, so check that on GitHub first.
+
+2. MAKE THE REPOSITORY PUBLIC AND ENABLE ISSUES.
+   An issue-tracker link to a private or issues-disabled repository is worse than no link.
+
+3. SCREENSHOTS.
+   The strongest pair is the same viewpoint with Horizon off and on. A close-up at ground
+   level showing the join with loaded chunks is the second most convincing, because that
+   seam is the thing people expect a distant-terrain mod to get wrong.
+   Both platforms render Markdown images: ![caption](https://url/to/image.png)
+   Host them on the project's own gallery where possible — external image hosts are
+   restricted on both sites and a blocked image leaves an empty box.
+
+4. CHECK THE FACTS AT RELEASE.
+   Version, Minecraft and NeoForge ranges against gradle.properties; the shader pack lists
+   against a fresh `./gradlew runShaderTest` sweep. The pack lists are the part most likely
+   to go stale, and the part readers will check.
+
+5. FORMAT.
+   Modrinth takes this file as-is in the Description tab.
+   CurseForge accepts Markdown but strips HTML comments like this one — paste everything
+   above the horizontal rule, not this block.
 -->

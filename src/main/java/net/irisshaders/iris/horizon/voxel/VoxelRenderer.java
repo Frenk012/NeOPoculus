@@ -41,6 +41,17 @@ public final class VoxelRenderer {
 	private final java.util.List<VoxelRegionMesh> translucentPending = new java.util.ArrayList<>();
 
 	private final NoPackVoxelShader shader = new NoPackVoxelShader();
+
+	// Shaderpack path (M6). Mirrors the classic engine's renderIris state
+	// machine: cache the program and framebuffer per (pipeline, depth texture),
+	// and remember a failure so a broken pack degrades to the no-pack pass once
+	// instead of throwing every frame. Reset when the pipeline is destroyed.
+	private net.irisshaders.iris.horizon.HorizonIrisProgram irisTerrain;
+	private net.irisshaders.iris.horizon.HorizonIrisProgram irisWater;
+	private Object irisPipeline;
+	private int irisDepthTex;
+	private boolean irisFailed;
+	private net.irisshaders.iris.gl.framebuffer.GlFramebuffer irisFramebuffer;
 	private final Matrix4f mvp = new Matrix4f();
 	private final FrustumIntersection frustum = new FrustumIntersection();
 	private final float[] mvpArray = new float[16];
@@ -208,10 +219,183 @@ public final class VoxelRenderer {
 		}
 	}
 
+	/**
+	 * Shaderpack path: draw every region through the pack's own dh_terrain
+	 * program (and dh_water for the translucent tail) into the pack's gbuffers,
+	 * so it receives real normals and material ids instead of shading our
+	 * single-output pixels from stale attachments.
+	 *
+	 * @return true when this pass handled the frame; false falls back to the
+	 *         no-pack program, which is correct for a pack shipping no dh
+	 *         programs at all.
+	 */
+	private boolean renderIris(Matrix4f modelView, Matrix4f projection,
+							   double camX, double camY, double camZ) {
+		if (irisFailed || meshes.isEmpty()) {
+			return false;
+		}
+		if (!(net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable()
+			instanceof net.irisshaders.iris.pipeline.IrisRenderingPipeline pipeline)) {
+			return false;
+		}
+		try {
+			var terrain = pipeline.getDHTerrainShader();
+			if (terrain.isEmpty()) {
+				return false; // nothing sensible to shade LOD with
+			}
+			int depthTex = pipeline.getHorizonDepthTexture();
+			net.irisshaders.iris.horizon.HorizonRuntime.setMainDepthTex(depthTex);
+			if (irisPipeline != pipeline || irisDepthTex != depthTex) {
+				if (irisPipeline != pipeline) {
+					onPipelineDestroyed();
+					irisFailed = false;
+				}
+				if (irisFramebuffer != null) {
+					irisFramebuffer.destroy();
+				}
+				if (irisTerrain == null) {
+					// 1/16: our positions are in sixteenths of a block.
+					irisTerrain = net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
+						"horizon_voxel_terrain", terrain.get(), pipeline.getCustomUniforms(), pipeline, 1.0f / 16.0f);
+				}
+				if (irisWater == null) {
+					// Water gets the pack's dh_water when it has one; otherwise the
+					// terrain program, which still shades far better than ours.
+					var water = pipeline.getDHWaterShader();
+					irisWater = net.irisshaders.iris.horizon.HorizonIrisProgram.createProgram(
+						"horizon_voxel_water", water.orElse(terrain.get()),
+						pipeline.getCustomUniforms(), pipeline, 1.0f / 16.0f);
+				}
+				irisFramebuffer = pipeline.createHorizonFramebuffer(terrain.get());
+				irisPipeline = pipeline;
+				irisDepthTex = depthTex;
+			}
+
+			mvp.set(projection).mul(modelView);
+			frustum.set(mvp);
+
+			int prevProgram = GL33C.glGetInteger(GL33C.GL_CURRENT_PROGRAM);
+			int prevVao = GL33C.glGetInteger(GL33C.GL_VERTEX_ARRAY_BINDING);
+			int prevFramebuffer = GL33C.glGetInteger(GL33C.GL_DRAW_FRAMEBUFFER_BINDING);
+
+			irisFramebuffer.bind();
+			GL33C.glEnable(GL33C.GL_DEPTH_TEST);
+			GL33C.glDepthFunc(GL33C.GL_LEQUAL);
+			GL33C.glDepthMask(true);
+			GL33C.glDisable(GL33C.GL_BLEND);
+			GL33C.glDisable(GL33C.GL_CULL_FACE); // winding is not outward-consistent yet
+			GL33C.glEnable(GL33C.GL_POLYGON_OFFSET_FILL);
+			// Same trick as the no-pack pass: push LOD fragments back so loaded
+			// chunks always win the depth test at the seam. The pack program has
+			// no coverage-mask discard, so this is what hides the overlap.
+			GL33C.glPolygonOffset(3.0f, 3.0f);
+
+			double maxDist = HorizonConfig.get().getLodDistanceBlocks() + 192.0;
+			double maxDistSq = maxDist * maxDist;
+			float relY = (float) -camY;
+			int drawn = 0;
+
+			irisTerrain.bind();
+			irisTerrain.fillUniformData(projection, modelView);
+			for (VoxelRegionMesh mesh : meshes.values()) {
+				if (!visibleNow(mesh, camX, camZ, relY, maxDistSq)) {
+					continue;
+				}
+				int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
+				float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
+				float oz = (float) ((double) VoxelRegionKey.rz(mesh.regionKey) * span - camZ);
+				irisTerrain.setModelPos(ox, relY - VoxelConstants.Y_BIAS, oz);
+				mesh.drawOpaque();
+				drawn++;
+				if (mesh.hasTranslucent()) {
+					translucentPending.add(mesh);
+				}
+			}
+
+			if (!translucentPending.isEmpty()) {
+				translucentPending.sort((a, b) -> Double.compare(
+					regionDistSq(b, camX, camY, camZ), regionDistSq(a, camX, camY, camZ)));
+				irisWater.bind();
+				irisWater.fillUniformData(projection, modelView);
+				for (VoxelRegionMesh mesh : translucentPending) {
+					int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
+					float ox = (float) ((double) VoxelRegionKey.rx(mesh.regionKey) * span - camX);
+					float oz = (float) ((double) VoxelRegionKey.rz(mesh.regionKey) * span - camZ);
+					irisWater.setModelPos(ox, relY - VoxelConstants.Y_BIAS, oz);
+					mesh.drawTranslucent();
+				}
+				translucentPending.clear();
+			}
+			drawnLastFrame = drawn;
+
+			GL33C.glPolygonOffset(0.0f, 0.0f);
+			GL33C.glDisable(GL33C.GL_POLYGON_OFFSET_FILL);
+			GL33C.glBindFramebuffer(GL33C.GL_DRAW_FRAMEBUFFER, prevFramebuffer);
+			GL33C.glBindVertexArray(prevVao);
+			GL33C.glUseProgram(prevProgram);
+			return true;
+		} catch (Throwable t) {
+			// One failure is enough: fall back to the no-pack pass for the rest
+			// of this pipeline rather than throwing every frame.
+			irisFailed = true;
+			net.irisshaders.iris.Iris.logger.error(
+				"Horizon: voxel LOD shaderpack path failed; falling back to the built-in program", t);
+			return false;
+		}
+	}
+
+	/** Frustum + distance test shared by both passes. */
+	private boolean visibleNow(VoxelRegionMesh mesh, double camX, double camZ, float relY, double maxDistSq) {
+		int span = VoxelRegionKey.regionSpanBlocks(mesh.level);
+		double originX = (double) VoxelRegionKey.rx(mesh.regionKey) * span;
+		double originZ = (double) VoxelRegionKey.rz(mesh.regionKey) * span;
+		double dcx = originX + span * 0.5 - camX;
+		double dcz = originZ + span * 0.5 - camZ;
+		if (dcx * dcx + dcz * dcz > maxDistSq) {
+			return false;
+		}
+		float ox = (float) (originX - camX);
+		float oz = (float) (originZ - camZ);
+		return frustum.testAab(ox, mesh.minY + relY, oz, ox + span, mesh.maxY + relY, oz + span);
+	}
+
+	/** Pipeline teardown: drop the pack-specific GL objects and re-arm the shader path. */
+	public void onPipelineDestroyed(Object pipeline) {
+		onPipelineDestroyed();
+	}
+
+	/** Pipeline teardown: drop the pack-specific GL objects and re-arm the shader path. */
+	public void onPipelineDestroyed() {
+		if (irisTerrain != null) {
+			irisTerrain.free();
+			irisTerrain = null;
+		}
+		if (irisWater != null) {
+			irisWater.free();
+			irisWater = null;
+		}
+		if (irisFramebuffer != null) {
+			irisFramebuffer.destroy();
+			irisFramebuffer = null;
+		}
+		irisPipeline = null;
+		irisDepthTex = 0;
+		irisFailed = false;
+	}
+
 	/** Render thread. Draws every visible region mesh, sampling the photo atlas (flat color where unbaked). */
 	public void render(Matrix4f modelView, Matrix4f projection, net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery) {
 		processUploads(HorizonConfig.get().getMaxUploadsPerFrame());
-		if (meshes.isEmpty() || !shader.ensure()) {
+		if (meshes.isEmpty()) {
+			return;
+		}
+		var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+		// Shaderpack first: it gives the pack real normals and materials. Falling
+		// through means no pack, no dh programs, or a failure already recorded.
+		if (renderIris(modelView, projection, camPos.x, camPos.y, camPos.z)) {
+			return;
+		}
+		if (!shader.ensure()) {
 			return;
 		}
 		Minecraft mc = Minecraft.getInstance();
@@ -460,9 +644,7 @@ public final class VoxelRenderer {
 	}
 
 	/** Render thread: pipeline destroy hook (no per-pipeline GL held in M3; kept for symmetry). */
-	public void onPipelineDestroyed(Object pipeline) {
-		// M6 adds a HorizonIrisProgram/framebuffer here; nothing to free in M3.
-	}
+
 
 	/** Render thread: free all GPU meshes and bump the epoch (world unload / config change). */
 	public void clear() {

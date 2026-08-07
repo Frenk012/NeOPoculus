@@ -93,6 +93,10 @@ public final class HorizonShaderTest {
 			finished = true;
 			Iris.logger.info("Horizon shader test: sweep complete, "
 				+ packs.size() + " screenshots in screenshots/");
+			// Shut down on our own. An unattended run that leaves a window open
+			// still needs a person to come and close it, which is most of what
+			// this harness exists to avoid.
+			mc.stop();
 			return;
 		}
 		apply(packs.get(index));
@@ -123,7 +127,9 @@ public final class HorizonShaderTest {
 	}
 
 	private void capture(Minecraft mc, int ordinal, String name) {
-		String file = String.format("shadertest-%02d-%s", ordinal, sanitize(name));
+		// The extension is not implied: Screenshot.grab writes the name verbatim,
+		// and a file without one is not openable as an image.
+		String file = String.format("shadertest-%02d-%s.png", ordinal, sanitize(name));
 		try {
 			Screenshot.grab(mc.gameDirectory, file, mc.getMainRenderTarget(), message -> {
 			});

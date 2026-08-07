@@ -492,6 +492,17 @@ public final class VoxelRenderer {
 			probe("shaderpack path", meshes.size());
 			return;
 		}
+		if (Iris.isPackInUseQuick()) {
+			// A pack is loaded but we could not draw through it. The built-in
+			// program writes flat colour straight into the pack's gbuffers, which
+			// the pack then lights as if it were albedo — the result is not a
+			// worse-looking LOD, it is a destroyed frame: Kappa rendered the whole
+			// world black behind a white LOD silhouette. A correct world with no
+			// distant terrain beats that, so stand down until the pack's own
+			// terrain program can be driven (see M6 phase 2).
+			probe("skipped: pack has no dh_terrain", meshes.size());
+			return;
+		}
 		probe("built-in path", meshes.size());
 		if (!shader.ensure()) {
 			return;

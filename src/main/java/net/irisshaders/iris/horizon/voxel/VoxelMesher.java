@@ -160,6 +160,7 @@ public final class VoxelMesher {
 										}
 										float[] yspan = emitQuad(translucent ? tbuf : buf, colors, key,
 											lightMeta, slot, translucent ? TRANSLUCENT_ALPHA : 255,
+											DhMaterials.of(palettes, state),
 											face, w, u, v, su, sv, sxLocal, szLocal, sy, cellSize);
 										minY = Math.min(minY, yspan[0]);
 										maxY = Math.max(maxY, yspan[1]);
@@ -304,7 +305,7 @@ public final class VoxelMesher {
 						// regions at the quad cap. A stable hash keeps the same
 						// tufts across re-meshes, so the field does not shimmer.
 						if (cellSize == 1 && crossKept(baseX + x, baseWorldYCells + y, baseZ + z)) {
-							buf = emitCross(buf, snap, colors, metadata, bakery, c, state,
+							buf = emitCross(buf, snap, colors, palettes, metadata, bakery, c, state,
 								x, y, z, baseX, baseZ, baseWorldYCells, cellSize,
 								counters, span, usedFallback);
 							if (counters[2] != 0) {
@@ -323,6 +324,7 @@ public final class VoxelMesher {
 					int biome = VoxelCell.biomeId(c);
 					int rgb = colors.colorOf(state);
 					int emission = palettes.emissionOf(state);
+					int material = DhMaterials.of(palettes, state);
 
 					for (int face = 0; face < VoxelConstants.FACE_COUNT; face++) {
 						int axis = FACE_AXIS[face];
@@ -393,7 +395,7 @@ public final class VoxelMesher {
 						}
 						for (int i = 0; i < 4; i++) {
 							LodVertexFormatV2.writeVertex(buf, vx[i], vy[i], vz[i], lightMeta, rgb,
-								0, face, slot, biome, face, 0);
+								material, face, slot, biome, face, 0);
 						}
 						float worldY0 = (vy[0] - VoxelConstants.Y_BIAS * U) / (float) U;
 						float worldY1 = (vy[2] - VoxelConstants.Y_BIAS * U) / (float) U;
@@ -419,6 +421,7 @@ public final class VoxelMesher {
 	 * shader to use the diagonal plane mapping and skip directional shading.
 	 */
 	private static ByteBuffer emitCross(ByteBuffer buf, SectionSnapshot snap, VoxelColorTable colors,
+										VoxelPalettes palettes,
 										net.irisshaders.iris.horizon.voxel.model.StateMetadataTable metadata,
 										net.irisshaders.iris.horizon.voxel.model.VoxelBakery bakery,
 										long cell, int state, int x, int y, int z,
@@ -428,6 +431,7 @@ public final class VoxelMesher {
 		int biome = VoxelCell.biomeId(cell);
 		int rgb = colors.colorOf(state);
 		int lightMeta = (VoxelCell.blockLight(cell) << 4) | VoxelCell.skyLight(cell);
+		int material = DhMaterials.of(palettes, state);
 		int slot = metadata.slotOf(state, biome, VoxelConstants.FACE_NEG_Z);
 		if (slot == 0 && !metadata.isBaked(state, biome)) {
 			bakery.requestBake(state, biome);
@@ -453,10 +457,10 @@ public final class VoxelMesher {
 			int za = diagonal == 0 ? z0 : z1;
 			int zb = diagonal == 0 ? z1 : z0;
 			int faceMeta = 6 + diagonal;
-			LodVertexFormatV2.writeVertex(buf, x0, y0, za, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
-			LodVertexFormatV2.writeVertex(buf, x1, y0, zb, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
-			LodVertexFormatV2.writeVertex(buf, x1, y1, zb, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
-			LodVertexFormatV2.writeVertex(buf, x0, y1, za, lightMeta, rgb, 0, faceMeta, slot, biome, faceMeta, 0);
+			LodVertexFormatV2.writeVertex(buf, x0, y0, za, lightMeta, rgb, material, faceMeta, slot, biome, faceMeta, 0);
+			LodVertexFormatV2.writeVertex(buf, x1, y0, zb, lightMeta, rgb, material, faceMeta, slot, biome, faceMeta, 0);
+			LodVertexFormatV2.writeVertex(buf, x1, y1, zb, lightMeta, rgb, material, faceMeta, slot, biome, faceMeta, 0);
+			LodVertexFormatV2.writeVertex(buf, x0, y1, za, lightMeta, rgb, material, faceMeta, slot, biome, faceMeta, 0);
 			counters[0]++;
 			if (lightMeta == 0) {
 				counters[1]++;
@@ -604,7 +608,7 @@ public final class VoxelMesher {
 	 * {@code [minY, maxY]} of the emitted vertices (world-space, un-biased).
 	 */
 	private static float[] emitQuad(ByteBuffer buf, VoxelColorTable colors, long key, int lightMeta, int atlasSlot,
-									int alpha, int face, int w, int u, int v, int su, int sv,
+									int alpha, int material, int face, int w, int u, int v, int su, int sv,
 									int sxLocal, int szLocal, int sy, int cellSize) {
 		int state = VoxelCell.stateId(key);
 		int rgb = colors.colorOf(state);
@@ -644,7 +648,7 @@ public final class VoxelMesher {
 			// (slabs, snow, carpets) can be expressed; Y_BIAS is a multiple of 16
 			// so the shader's fract-based per-cell UVs are unaffected.
 			LodVertexFormatV2.writeVertex(buf, rlx * U, posY * U, rlz * U, lightMeta, rgb, alpha,
-				0 /*material*/, face, atlasSlot, biome, face /*faceMeta*/,
+				material, face, atlasSlot, biome, face /*faceMeta*/,
 				alpha < 255 ? 1 : 0 /*flags: bit0 = translucent, for the M6 iris path*/);
 		}
 		return new float[]{minY, maxY};

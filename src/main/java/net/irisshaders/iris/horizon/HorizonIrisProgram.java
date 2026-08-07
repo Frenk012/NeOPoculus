@@ -184,39 +184,41 @@ public class HorizonIrisProgram {
 		customUniforms.assignTo(uniformBuilder);
 		BuiltinReplacementUniforms.addBuiltinReplacementUniforms(uniformBuilder);
 		ProgramImages.Builder builder = ProgramImages.builder(id);
+		pipeline.addGbufferOrShadowSamplers(samplerBuilder, builder, pipeline::getFlippedAfterPrepare, false, false, true, false);
 		boolean normalsTaken = false;
 		boolean specularTaken = false;
 		boolean atlasTaken = false;
 		if (terrainMode) {
-			// Registered first so they win over addGbufferOrShadowSamplers, which
-			// points these at the BLOCK atlas's PBR maps. Sampling those with a
-			// photo-atlas coordinate reads whatever LabPBR data happens to live at
-			// that spot — random normals and shininess, which is what speckles
-			// distant terrain and turns water strange colours. Flat normal and zero
-			// specular say "plain surface" instead.
+			// Registered AFTER the gbuffer samplers, and the order is the whole
+			// point: both registrations queue a uniform assignment for the same
+			// sampler location, and the calls are replayed in order, so the last
+			// one wins. Going first meant Iris's own hasTexture=false binding — a
+			// 1x1 white pixel on tex/texture/gtexture — overwrote the atlas, and
+			// every LOD fragment sampled white.
+			//
+			// A DYNAMIC sampler, deliberately: an external one would pin gtexture
+			// to unit 0 and force binding over the block atlas on the shared unit,
+			// the move this codebase already documents as permanent black terrain.
+			// Dynamic samplers get a free unit of their own and never touch unit 0.
+			//
+			// The explicit sampler object turns mipmapping off. The built-in shader
+			// picks its own level with textureGrad; a pack samples with automatic
+			// derivatives plus its own bias — Kappa uses
+			// texture(gtexture, uv, MipBias) — and our coordinate, stretched across
+			// a merged quad, drives that to coarse levels where neighbouring slots
+			// of the 2048px atlas bleed together. A sampler object binds to one
+			// unit only, so the built-in path keeps its mips.
+			if (atlas != null) {
+				atlasTaken = samplerBuilder.addDynamicSampler(TextureType.TEXTURE_2D, atlas,
+					net.irisshaders.iris.gl.sampler.GlSampler.LINEAR, "tex", "texture", "gtexture");
+			}
+			// Same ordering reason. These otherwise point at the BLOCK atlas's PBR
+			// maps, and sampling those with a photo-atlas coordinate reads whatever
+			// LabPBR data sits at that spot — random normals and shininess. A flat
+			// normal and zero specular say "plain surface" instead.
 			normalsTaken = samplerBuilder.addDynamicSampler(HorizonIrisProgram::flatNormalTexture, "normals");
 			specularTaken = samplerBuilder.addDynamicSampler(HorizonIrisProgram::zeroSpecularTexture, "specular");
 		}
-		if (terrainMode && atlas != null) {
-			// Registered BEFORE the gbuffer samplers so these names resolve to the
-			// photo atlas. A DYNAMIC sampler, deliberately: an external one would
-			// pin gtexture to unit 0 and force us to bind over the block atlas on
-			// the shared unit and put it back — the exact move this codebase has
-			// already documented as permanent black terrain. Dynamic samplers get
-			// a free unit of their own and never touch unit 0.
-			// Bound with an explicit sampler object that has mipmapping off. The
-			// built-in shader controls its own mip level with textureGrad; a pack
-			// samples with automatic derivatives plus its own bias — Kappa uses
-			// texture(gtexture, uv, MipBias) — and our stretched-over-a-quad
-			// coordinate pushes that to coarse levels where neighbouring slots of
-			// the 2048px atlas bleed into each other. A sampler object overrides
-			// the texture's parameters only on the unit it is bound to, so this
-			// stays confined to the pack path and leaves the built-in one, which
-			// uses the mips correctly, untouched.
-			atlasTaken = samplerBuilder.addDynamicSampler(TextureType.TEXTURE_2D, atlas,
-				net.irisshaders.iris.gl.sampler.GlSampler.LINEAR, "tex", "texture", "gtexture");
-		}
-		pipeline.addGbufferOrShadowSamplers(samplerBuilder, builder, pipeline::getFlippedAfterPrepare, false, false, true, false);
 		customUniforms.mapholderToPass(uniformBuilder, this);
 		this.uniforms = uniformBuilder.buildUniforms();
 		this.customUniforms = customUniforms;

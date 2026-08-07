@@ -33,16 +33,25 @@ public final class ClientLodInstall {
 	private final int paletteVersion;
 	private int installedSections;
 	private long installedBytes;
-	private boolean capLogged;
+	private boolean capReported;
+
+	/** Notified once when the budget is hit; set by the client so this class stays render-free. */
+	private static volatile java.util.function.BiConsumer<Integer, Integer> budgetListener = (used, limit) -> {
+	};
+
+	public static void onBudgetReached(java.util.function.BiConsumer<Integer, Integer> listener) {
+		budgetListener = listener == null ? (used, limit) -> {
+		} : listener;
+	}
 
 	/**
-	 * Ceilings on what one session will accept from a server. A well-behaved
-	 * server sends far less: the whole 300-block test world was 25 files and
-	 * 5 MB. These exist so a hostile or broken server cannot grow the client's
-	 * disk without bound — the worst it can still do is waste this much.
+	 * Section-count ceiling, a backstop against a server that streams endlessly
+	 * without the bytes adding up (tiny or empty sections). The byte budget is
+	 * the meaningful limit and comes from the config, so the player can raise it
+	 * for a large pre-generated server: a 300 m radius measured about 5 MB and
+	 * area grows with the square of the radius, so 4 km lands near 900 MB.
 	 */
-	private static final int MAX_SECTIONS_PER_SESSION = 200_000;
-	private static final long MAX_BYTES_PER_SESSION = 512L * 1024L * 1024L;
+	private static final int MAX_SECTIONS_PER_SESSION = 1_000_000;
 
 	private ClientLodInstall(int[] stateRemap, int[] biomeRemap, int paletteVersion) {
 		this.stateRemap = stateRemap;
@@ -154,12 +163,18 @@ public final class ClientLodInstall {
 		if (store == null || encoded == null || encoded.length == 0) {
 			return false;
 		}
-		if (installedSections >= MAX_SECTIONS_PER_SESSION || installedBytes >= MAX_BYTES_PER_SESSION) {
-			if (!capLogged) {
-				capLogged = true;
-				Iris.logger.warn("Horizon: refusing further server LOD this session — "
-					+ installedSections + " sections / " + (installedBytes >> 20)
-					+ " MB already accepted");
+		long budgetBytes = (long) net.irisshaders.iris.horizon.HorizonConfig.get()
+			.getServerLodDiskBudgetMb() * 1024L * 1024L;
+		if (installedSections >= MAX_SECTIONS_PER_SESSION || installedBytes >= budgetBytes) {
+			if (!capReported) {
+				capReported = true;
+				int mb = (int) (installedBytes >> 20);
+				Iris.logger.warn("Horizon: server LOD disk budget reached — " + mb
+					+ " MB accepted, no more will be stored this session");
+				// Tell the player: the visible symptom is distant terrain quietly
+				// refusing to fill in, which is impossible to attribute otherwise.
+				budgetListener.accept(mb, net.irisshaders.iris.horizon.HorizonConfig.get()
+					.getServerLodDiskBudgetMb());
 			}
 			return false;
 		}

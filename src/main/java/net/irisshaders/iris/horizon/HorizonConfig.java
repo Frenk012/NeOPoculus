@@ -75,6 +75,15 @@ public class HorizonConfig {
 	 * maxUploadsPerFrame mesh-count budget.
 	 */
 	private int maxUploadBytesPerFrame = 8 * 1024 * 1024;
+	/**
+	 * Disk budget for LOD downloaded from a server, in MiB, per world. Reaching
+	 * it stops the client accepting more (it never deletes anything on its own),
+	 * so distant terrain simply stops filling in — which is why the player is
+	 * told when it happens. Sized for real worlds: a 300 m radius measured about
+	 * 5 MB, and area grows with the square of the radius, so a 4 km
+	 * pre-generated server lands near 900 MB.
+	 */
+	private int serverLodDiskBudgetMb = 2048;
 
 	private HorizonConfig() {
 		load();
@@ -111,6 +120,7 @@ public class HorizonConfig {
 		voxelMemoryBudgetMb = clamp(parseInt(props, "voxelMemoryBudgetMb", voxelMemoryBudgetMb), 64, 2048);
 		maxLodVramMb = clamp(parseInt(props, "maxLodVramMb", maxLodVramMb), 128, 4096);
 		maxUploadBytesPerFrame = clamp(parseInt(props, "maxUploadBytesPerFrame", maxUploadBytesPerFrame), 1 << 20, 64 << 20);
+		serverLodDiskBudgetMb = clamp(parseInt(props, "serverLodDiskBudgetMb", serverLodDiskBudgetMb), 64, 65536);
 
 		if (!Files.exists(file)) {
 			save();
@@ -129,6 +139,7 @@ public class HorizonConfig {
 		props.setProperty("renderWithShaders", Boolean.toString(renderWithShaders));
 		props.setProperty("engine", voxelEngine ? "voxel" : "classic");
 		props.setProperty("voxelMemoryBudgetMb", Integer.toString(voxelMemoryBudgetMb));
+		props.setProperty("serverLodDiskBudgetMb", Integer.toString(serverLodDiskBudgetMb));
 		props.setProperty("maxLodVramMb", Integer.toString(maxLodVramMb));
 		props.setProperty("maxUploadBytesPerFrame", Integer.toString(maxUploadBytesPerFrame));
 
@@ -238,6 +249,14 @@ public class HorizonConfig {
 
 	public void setVoxelMemoryBudgetMb(int value) {
 		this.voxelMemoryBudgetMb = clamp(value, 64, 2048);
+	}
+
+	public int getServerLodDiskBudgetMb() {
+		return serverLodDiskBudgetMb;
+	}
+
+	public void setServerLodDiskBudgetMb(int value) {
+		this.serverLodDiskBudgetMb = clamp(value, 64, 65536);
 	}
 
 	public int getMaxLodVramMb() {

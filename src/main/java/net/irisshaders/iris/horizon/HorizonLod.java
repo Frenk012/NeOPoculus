@@ -111,6 +111,19 @@ public final class HorizonLod {
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, ClientTickEvent.Post.class, INSTANCE::onClientTick);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, net.neoforged.neoforge.client.event.ViewportEvent.RenderFog.class, INSTANCE::onRenderFog);
 		NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, net.neoforged.neoforge.client.event.CustomizeGuiOverlayEvent.DebugText.class, INSTANCE::onDebugText);
+		// Tell the player when the server-LOD disk budget runs out. Without this
+		// the only symptom is distant terrain quietly refusing to fill in, which
+		// is impossible to attribute to a budget.
+		net.irisshaders.iris.horizon.voxel.ClientLodInstall.onBudgetReached((usedMb, limitMb) ->
+			Minecraft.getInstance().execute(() -> {
+				var player = Minecraft.getInstance().player;
+				if (player != null) {
+					player.displayClientMessage(net.minecraft.network.chat.Component.literal(
+						"§eHorizon: §fserver LOD disk budget reached (" + usedMb + " / " + limitMb
+							+ " MB). No more distant terrain will be stored — raise the budget in "
+							+ "Video Settings → Horizon LOD, or clear this world's cache."), false);
+				}
+			}));
 		Iris.logger.info("Horizon extended LOD system initialized");
 	}
 

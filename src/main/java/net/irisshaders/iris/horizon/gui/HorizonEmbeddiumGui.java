@@ -120,6 +120,20 @@ public class HorizonEmbeddiumGui {
 			.setImpact(OptionImpact.LOW)
 			.build();
 
+		// Disk budget for LOD downloaded from a server. A slider in MiB rather
+		// than a free-text box because Embeddium's option controls are sliders;
+		// the same value is editable as serverLodDiskBudgetMb in the config file
+		// for anyone who wants an exact number outside these steps.
+		Option<Integer> serverLodDisk = OptionImpl.createBuilder(Integer.TYPE, HorizonConfigStorage.INSTANCE)
+			.setId(id("horizon/server_lod_disk"))
+			.setName(name("serverLodDisk"))
+			.setTooltip(tooltip("serverLodDisk"))
+			.setControl(o -> new SliderControl(o, 256, 16384, 256, ControlValueFormatter.number()))
+			.setBinding(new GenericBinding<>(HorizonConfig::setServerLodDiskBudgetMb,
+				HorizonConfig::getServerLodDiskBudgetMb))
+			.setImpact(OptionImpact.LOW)
+			.build();
+
 		OptionGroup main = OptionGroup.createBuilder()
 			.setId(OptionIdentifier.create(id("horizon/main")))
 			.add(enabled)
@@ -139,6 +153,7 @@ public class HorizonEmbeddiumGui {
 			.add(uploads)
 			.add(workerThreads)
 			.add(saveInterval)
+			.add(serverLodDisk)
 			.build();
 
 		event.addPage(new OptionPage(OptionIdentifier.create(id("horizon")),
